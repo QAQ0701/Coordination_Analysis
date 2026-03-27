@@ -1,0 +1,13 @@
+# macOS system files
+.DS_Store
+
+# Python cache
+__pycache__/
+
+# Folders
+data/
+20260210.ipynb
+20260304_nc0304_pilot_data.ipynb
+calculation.py
+dataAnalysis2.py
+

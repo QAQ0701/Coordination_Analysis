@@ -525,57 +525,6 @@ def plot_windowed_correlation(windows):
     plt.show()
 
 
-# def plot_phase_transitions(summary, transitions):
-#     if not summary:
-#         print("No transition summary to plot.")
-#         return
-
-#     centers = summary["centers"]
-#     means_smooth = summary["means_smooth"]
-#     stds_smooth = summary["stds_smooth"]
-#     phase_jump = summary["phase_jump"]
-
-#     fig, axes = plt.subplots(3, 1, figsize=(24, 16), sharex=True)
-
-#     #positional graph
-
-
-#     # Mean phase
-#     axes[0].plot(centers, means_smooth, marker="o")
-#     axes[0].axhline(0, linestyle="--", alpha=0.6)
-#     axes[0].axhline(np.pi, linestyle="--", alpha=0.6)
-#     axes[0].axhline(-np.pi, linestyle="--", alpha=0.6)
-#     axes[0].set_ylabel("Mean phase (rad)")
-#     axes[0].set_title("Windowed Relative Phase and Detected Transitions")
-#     axes[0].grid(True)
-
-#     # Circular std
-#     axes[1].plot(centers, stds_smooth, marker="o")
-#     axes[1].axhline(
-#         summary["std_thresh"], linestyle="--", alpha=0.7, label="std thresh"
-#     )
-#     axes[1].set_ylabel("Circular std")
-#     axes[1].legend()
-#     axes[1].grid(True)
-
-#     # Phase jump
-#     axes[2].plot(centers, phase_jump, marker="o")
-#     axes[2].axhline(
-#         summary["phase_jump_thresh"], linestyle="--", alpha=0.7, label="jump thresh"
-#     )
-#     axes[2].set_ylabel("Phase jump (rad)")
-#     axes[2].set_xlabel("Time (s)")
-#     axes[2].legend()
-#     axes[2].grid(True)
-
-#     for tr in transitions:
-#         for ax in axes:
-#             ax.axvline(tr["time"], color="red", alpha=0.7)
-
-#     plt.tight_layout()
-#     plt.show()
-
-
 def plot_angles(time, p1, p2, ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(24, 4))
@@ -600,195 +549,308 @@ def plot_phase_transitions(summary, transitions, df_processed):
     stds_smooth = summary["stds_smooth"]
     phase_jump = summary["phase_jump"]
 
+    # -----------------------------
+    # State -> color mapping
+    # -----------------------------
+    state_colors = {
+        "in-phase": "green",
+        "anti-phase": "red",
+        "intermediate": "orange",
+    }
+
+    # Classify each smoothed mean phase point
+    states = [classify_phase_state(m) for m in means_smooth]
+    point_colors = [state_colors.get(s, "black") for s in states]
+
     fig, axes = plt.subplots(4, 1, figsize=(24, 20), sharex=True)
 
+    # =========================================================
     # 1) Positional / angle graph on top
+    # =========================================================
     plot_angles(
         df_processed["time"],
         df_processed["p1_unwrapped"],
         df_processed["p2_unwrapped"],
         ax=axes[0],
     )
+    axes[0].set_title("Agent Angles + Coordination Transitions")
 
+    # =========================================================
     # 2) Mean phase
-    axes[1].plot(centers, means_smooth, marker="o")
-    axes[1].axhline(0, linestyle="--", alpha=0.6)
-    axes[1].axhline(np.pi, linestyle="--", alpha=0.6)
-    axes[1].axhline(-np.pi, linestyle="--", alpha=0.6)
+    # =========================================================
+    axes[1].plot(centers, means_smooth, color="black", alpha=0.5, linewidth=1.5)
+    axes[1].scatter(centers, means_smooth, c=point_colors, s=50, zorder=3)
+
+    axes[1].axhline(0, linestyle="--", alpha=0.6, color="gray", label="In-phase (0)")
+    axes[1].axhline(
+        np.pi, linestyle="--", alpha=0.6, color="gray", label="Anti-phase (π)"
+    )
+    axes[1].axhline(-np.pi, linestyle="--", alpha=0.6, color="gray")
     axes[1].set_ylabel("Mean phase (rad)")
     axes[1].set_title("Windowed Relative Phase and Detected Transitions")
     axes[1].grid(True)
 
+    # =========================================================
     # 3) Circular std
-    axes[2].plot(centers, stds_smooth, marker="o")
+    # =========================================================
+    axes[2].plot(centers, stds_smooth, marker="o", color="black")
     axes[2].axhline(
-        summary["std_thresh"], linestyle="--", alpha=0.7, label="std thresh"
+        summary["std_thresh"],
+        linestyle="--",
+        alpha=0.7,
+        color="purple",
+        label="std thresh",
     )
     axes[2].set_ylabel("Circular std")
     axes[2].legend()
     axes[2].grid(True)
 
+    # =========================================================
     # 4) Phase jump
-    axes[3].plot(centers, phase_jump, marker="o")
+    # =========================================================
+    axes[3].plot(centers, phase_jump, marker="o", color="black")
     axes[3].axhline(
-        summary["phase_jump_thresh"], linestyle="--", alpha=0.7, label="jump thresh"
+        summary["phase_jump_thresh"],
+        linestyle="--",
+        alpha=0.7,
+        color="blue",
+        label="jump thresh",
     )
     axes[3].set_ylabel("Phase jump (rad)")
     axes[3].set_xlabel("Time (s)")
     axes[3].legend()
     axes[3].grid(True)
 
-    # Mark transitions on all panels
+    # =========================================================
+    # Mark transitions on all panels with state-specific colors
+    # =========================================================
     for tr in transitions:
+        tr_color = state_colors.get(tr["to_state"], "black")
+        tr_label = tr["to_state"]
+
+        # vertical lines across all panels
         for ax in axes:
-            ax.axvline(tr["time"], color="red", alpha=0.7)
+            ax.axvline(tr["time"], color=tr_color, alpha=0.8, linestyle="--")
+
+        # label on mean-phase plot
+        axes[1].text(
+            tr["time"],
+            tr["to_phase"],
+            tr_label,
+            color=tr_color,
+            fontsize=9,
+            rotation=90,
+            va="bottom",
+            ha="right",
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"),
+        )
+
+    # =========================================================
+    # Custom legend for state colors
+    # =========================================================
+    from matplotlib.lines import Line2D
+
+    legend_elements = [
+        Line2D(
+            [0],
+            [0],
+            color="green",
+            lw=2,
+            linestyle="--",
+            label="Transition to In-phase",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="red",
+            lw=2,
+            linestyle="--",
+            label="Transition to Anti-phase",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="orange",
+            lw=2,
+            linestyle="--",
+            label="Transition to Intermediate",
+        ),
+    ]
+
+    axes[1].legend(handles=legend_elements, loc="upper right")
 
     plt.tight_layout()
     plt.show()
 
 
-# def plot_phase_transitions(summary, transitions, df_processed):
-#     if not summary:
-#         print("No transition summary to plot.")
-#         return
+def plot_transition_diagnostics(
+    summary, windows, transitions=None, min_dwell=5, candidate_only=True
+):
+    """
+    Debug plot for transition detection logic.
 
-#     centers = summary["centers"]
-#     means_smooth = summary["means_smooth"]
-#     stds_smooth = summary["stds_smooth"]
-#     phase_jump = summary["phase_jump"]
+    Shows:
+    1) smoothed mean phase over time
+    2) candidate transition indices
+    3) dwell-confirmation window for each candidate
+    4) whether each future point is closer to old angle or new angle
 
-#     # -----------------------------
-#     # State -> color mapping
-#     # -----------------------------
-#     state_colors = {
-#         "in-phase": "green",
-#         "anti-phase": "red",
-#         "intermediate": "orange",
-#     }
+    Parameters
+    ----------
+    summary : dict
+        Output transition_summary from detect_phase_transitions()
+    windows : list of dict
+        Window list from windowed_phase_analysis()
+    transitions : list of dict or None
+        Accepted transitions from detect_phase_transitions()
+    min_dwell : int
+        Same min_dwell used in detection
+    candidate_only : bool
+        If True, only plot candidate indices.
+        If False, also marks accepted transitions if provided.
+    """
+    if not summary:
+        print("No summary provided.")
+        return
 
-#     # Classify each smoothed mean phase point
-#     states = [classify_phase_state(m) for m in means_smooth]
-#     point_colors = [state_colors.get(s, "black") for s in states]
+    centers = np.asarray(summary["centers"])
+    means_smooth = np.asarray(summary["means_smooth"])
+    stds_smooth = np.asarray(summary["stds_smooth"])
+    phase_jump = np.asarray(summary["phase_jump"])
+    phase_jump_thresh = summary["phase_jump_thresh"]
+    std_thresh = summary["std_thresh"]
 
-#     fig, axes = plt.subplots(4, 1, figsize=(24, 20), sharex=True)
+    # same candidate logic as detect_phase_transitions
+    candidate_idx = np.where(
+        (phase_jump >= phase_jump_thresh) | (stds_smooth >= std_thresh)
+    )[0]
 
-#     # =========================================================
-#     # 1) Positional / angle graph on top
-#     # =========================================================
-#     plot_angles(
-#         df_processed["time"],
-#         df_processed["p1_unwrapped"],
-#         df_processed["p2_unwrapped"],
-#         ax=axes[0],
-#     )
-#     axes[0].set_title("Agent Angles + Coordination Transitions")
+    if len(candidate_idx) == 0:
+        print("No candidate transitions found.")
+        return
 
-#     # =========================================================
-#     # 2) Mean phase
-#     # =========================================================
-#     axes[1].plot(centers, means_smooth, color="black", alpha=0.5, linewidth=1.5)
-#     axes[1].scatter(centers, means_smooth, c=point_colors, s=50, zorder=3)
+    nrows = len(candidate_idx)
+    fig, axes = plt.subplots(nrows, 1, figsize=(18, max(4, 4 * nrows)), sharex=True)
 
-#     axes[1].axhline(0, linestyle="--", alpha=0.6, color="gray", label="In-phase (0)")
-#     axes[1].axhline(
-#         np.pi, linestyle="--", alpha=0.6, color="gray", label="Anti-phase (π)"
-#     )
-#     axes[1].axhline(-np.pi, linestyle="--", alpha=0.6, color="gray")
-#     axes[1].set_ylabel("Mean phase (rad)")
-#     axes[1].set_title("Windowed Relative Phase and Detected Transitions")
-#     axes[1].grid(True)
+    if nrows == 1:
+        axes = [axes]
 
-#     # =========================================================
-#     # 3) Circular std
-#     # =========================================================
-#     axes[2].plot(centers, stds_smooth, marker="o", color="black")
-#     axes[2].axhline(
-#         summary["std_thresh"],
-#         linestyle="--",
-#         alpha=0.7,
-#         color="purple",
-#         label="std thresh",
-#     )
-#     axes[2].set_ylabel("Circular std")
-#     axes[2].legend()
-#     axes[2].grid(True)
+    accepted_idx = set()
+    if transitions is not None:
+        accepted_idx = {tr["idx"] for tr in transitions if "idx" in tr}
 
-#     # =========================================================
-#     # 4) Phase jump
-#     # =========================================================
-#     axes[3].plot(centers, phase_jump, marker="o", color="black")
-#     axes[3].axhline(
-#         summary["phase_jump_thresh"],
-#         linestyle="--",
-#         alpha=0.7,
-#         color="blue",
-#         label="jump thresh",
-#     )
-#     axes[3].set_ylabel("Phase jump (rad)")
-#     axes[3].set_xlabel("Time (s)")
-#     axes[3].legend()
-#     axes[3].grid(True)
+    for ax, idx in zip(axes, candidate_idx):
+        if idx == 0:
+            ax.set_title(f"Candidate idx={idx} skipped (no previous window)")
+            continue
 
-#     # =========================================================
-#     # Mark transitions on all panels with state-specific colors
-#     # =========================================================
-#     for tr in transitions:
-#         tr_color = state_colors.get(tr["to_state"], "black")
-#         tr_label = tr["to_state"]
+        old_angle = means_smooth[idx - 1]
+        new_angle = means_smooth[idx]
 
-#         # vertical lines across all panels
-#         for ax in axes:
-#             ax.axvline(tr["time"], color=tr_color, alpha=0.8, linestyle="--")
+        old_label = classify_phase_state(old_angle)
+        new_label = classify_phase_state(new_angle)
 
-#         # label on mean-phase plot
-#         axes[1].text(
-#             tr["time"],
-#             tr["to_phase"],
-#             tr_label,
-#             color=tr_color,
-#             fontsize=9,
-#             rotation=90,
-#             va="bottom",
-#             ha="right",
-#             bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"),
-#         )
+        end_idx = min(len(means_smooth), idx + min_dwell)
+        future_idx = np.arange(idx, end_idx)
+        future = means_smooth[idx:end_idx]
 
-#     # =========================================================
-#     # Custom legend for state colors
-#     # =========================================================
-#     from matplotlib.lines import Line2D
+        # distances used by your actual dwell logic
+        d_new = np.array([circular_distance(f, new_angle) for f in future])
+        d_old = np.array([circular_distance(f, old_angle) for f in future])
+        stays_new = d_new < d_old
 
-#     legend_elements = [
-#         Line2D(
-#             [0],
-#             [0],
-#             color="green",
-#             lw=2,
-#             linestyle="--",
-#             label="Transition to In-phase",
-#         ),
-#         Line2D(
-#             [0],
-#             [0],
-#             color="red",
-#             lw=2,
-#             linestyle="--",
-#             label="Transition to Anti-phase",
-#         ),
-#         Line2D(
-#             [0],
-#             [0],
-#             color="orange",
-#             lw=2,
-#             linestyle="--",
-#             label="Transition to Intermediate",
-#         ),
-#     ]
+        # base trajectory
+        ax.plot(centers, means_smooth, color="0.75", linewidth=1.2, zorder=1)
+        ax.scatter(centers, means_smooth, color="0.6", s=18, zorder=2)
 
-#     axes[1].legend(handles=legend_elements, loc="upper right")
+        # reference lines
+        ax.axhline(0, linestyle="--", color="gray", alpha=0.5)
+        ax.axhline(np.pi, linestyle="--", color="gray", alpha=0.4)
+        ax.axhline(-np.pi, linestyle="--", color="gray", alpha=0.4)
 
-#     plt.tight_layout()
-#     plt.show()
+        # candidate index
+        ax.axvline(centers[idx], color="purple", linestyle="--", linewidth=2, zorder=3)
+
+        # old/new anchor points
+        ax.scatter(
+            centers[idx - 1], old_angle, color="blue", s=80, zorder=5, label="old angle"
+        )
+        ax.scatter(
+            centers[idx], new_angle, color="red", s=80, zorder=5, label="new angle"
+        )
+
+        # dwell window shading
+        if len(future_idx) > 0:
+            ax.axvspan(
+                centers[future_idx[0]],
+                centers[future_idx[-1]],
+                color="gold",
+                alpha=0.15,
+                zorder=0,
+            )
+
+        # future points: green if closer to new, orange if closer to old
+        for j, fidx in enumerate(future_idx):
+            color = "green" if stays_new[j] else "orange"
+            marker = "o" if stays_new[j] else "x"
+            ax.scatter(
+                centers[fidx],
+                means_smooth[fidx],
+                color=color,
+                marker=marker,
+                s=100,
+                zorder=6,
+            )
+
+            ax.text(
+                centers[fidx],
+                means_smooth[fidx] + 0.18,
+                f"{j}\nnew:{d_new[j]:.2f}\nold:{d_old[j]:.2f}",
+                fontsize=8,
+                ha="center",
+                va="bottom",
+                color=color,
+                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+            )
+
+        accepted = len(future) == min_dwell and np.all(stays_new)
+
+        title = (
+            f"Candidate idx={idx}, t={centers[idx]:.3f}s | "
+            f"{old_label} -> {new_label} | "
+            f"accepted_by_dwell={accepted}"
+        )
+
+        if transitions is not None and idx in accepted_idx:
+            title += " | IN transitions[]"
+        elif transitions is not None:
+            title += " | NOT in transitions[]"
+
+        ax.set_title(title)
+        ax.set_ylabel("Mean phase (rad)")
+        ax.grid(True, alpha=0.3)
+
+        # compact legend text inside panel
+        info = (
+            f"phase_jump={phase_jump[idx]:.3f} (th={phase_jump_thresh:.3f})\n"
+            f"std={stds_smooth[idx]:.3f} (th={std_thresh:.3f})\n"
+            f"dwell window = [{idx}, {end_idx})  len={len(future)}\n"
+            f"green = closer to NEW, orange = closer to OLD"
+        )
+        ax.text(
+            0.01,
+            0.98,
+            info,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            bbox=dict(facecolor="white", alpha=0.8, edgecolor="lightgray"),
+        )
+
+    axes[-1].set_xlabel("Time (s)")
+    plt.tight_layout()
+    plt.show()
 
 
 # ============================================================

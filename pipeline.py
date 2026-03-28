@@ -558,6 +558,15 @@ def plot_phase_transitions(summary, transitions, df_processed):
         "intermediate": "orange",
     }
 
+    transition_colors = {
+        "in-phase to anti-phase": "purple",
+        "anti-phase to in-phase": "blue",
+        "in-phase to intermediate": "brown",
+        "intermediate to in-phase": "brown",
+        "anti-phase to intermediate": "brown",
+        "intermediate to anti-phase": "brown",
+    }
+
     # Classify each smoothed mean phase point
     states = [classify_phase_state(m) for m in means_smooth]
     point_colors = [state_colors.get(s, "black") for s in states]
@@ -581,11 +590,15 @@ def plot_phase_transitions(summary, transitions, df_processed):
     axes[1].plot(centers, means_smooth, color="black", alpha=0.5, linewidth=1.5)
     axes[1].scatter(centers, means_smooth, c=point_colors, s=50, zorder=3)
 
-    axes[1].axhline(0, linestyle="--", alpha=0.6, color="gray", label="In-phase (0)")
+    axes[1].axhline(0, linestyle="--", alpha=0.6, color="black", label="In-phase (0)")
     axes[1].axhline(
-        np.pi, linestyle="--", alpha=0.6, color="gray", label="Anti-phase (π)"
+        np.pi, linestyle="--", alpha=0.6, color="black", label="Anti-phase (π)"
     )
-    axes[1].axhline(-np.pi, linestyle="--", alpha=0.6, color="gray")
+    axes[1].axhline(-np.pi, linestyle="--", alpha=0.6, color="black")
+    axes[1].axhline(-np.pi + 0.87, linestyle="--", alpha=0.6, color="gray")
+    axes[1].axhline(np.pi - 0.87, linestyle="--", alpha=0.6, color="gray")
+    axes[1].axhline(0 + 0.87, linestyle="--", alpha=0.6, color="gray")
+    axes[1].axhline(0 - 0.87, linestyle="--", alpha=0.6, color="gray")
     axes[1].set_ylabel("Mean phase (rad)")
     axes[1].set_title("Windowed Relative Phase and Detected Transitions")
     axes[1].grid(True)
@@ -625,8 +638,16 @@ def plot_phase_transitions(summary, transitions, df_processed):
     # Mark transitions on all panels with state-specific colors
     # =========================================================
     for tr in transitions:
-        tr_color = state_colors.get(tr["to_state"], "black")
-        tr_label = tr["to_state"]
+        tag = f"{tr['from_state']} to {tr['to_state']}"
+        tr_color = transition_colors.get(tag, "black")
+        tr_label = tag
+        print("tag", tag)
+        print("tr_label", tr_label)
+        print("tr_color", tr_color)
+
+        # # horizontal lines across all panels
+        # for ax in axes:
+        #     ax.axhline(tr["to_phase"], color=tr_color, alpha=0.8, linestyle="--")
 
         # vertical lines across all panels
         for ax in axes:
@@ -654,26 +675,26 @@ def plot_phase_transitions(summary, transitions, df_processed):
         Line2D(
             [0],
             [0],
-            color="green",
+            color="blue",
             lw=2,
             linestyle="--",
-            label="Transition to In-phase",
+            label="In-phase to Anti-phase",
         ),
         Line2D(
             [0],
             [0],
-            color="red",
+            color="purple",
             lw=2,
             linestyle="--",
-            label="Transition to Anti-phase",
+            label="Anti-phase to In-phase",
         ),
         Line2D(
             [0],
             [0],
-            color="orange",
+            color="brown",
             lw=2,
             linestyle="--",
-            label="Transition to Intermediate",
+            label="Transitions to/from Intermediate",
         ),
     ]
 
@@ -865,7 +886,7 @@ def run_full_pipeline(
     dt=0.001,
     window_size=0.5,
     freq_band=(0, 100),
-    phase_jump_thresh=np.deg2rad(45),
+    phase_jump_thresh=np.deg2rad(50),
     smooth_k=3,
     min_dwell=2,
 ):

@@ -9,14 +9,94 @@ from pyleoclim.utils.correlation import association
 
 # ============================================================
 # ---------------------- DATA LAYER --------------------------
-# ============================================================
+# ===========================================================
 
 
-def load_and_clean_data(filepath, time_col="time"):
-    df = pd.read_excel(filepath)
-    df = df.sort_values(time_col)
-    df = df.groupby(time_col, as_index=False).mean()
-    return df
+def load_physio_data(physio_dir, bunting_df):
+    physio_data_df = pd.read_excel(physio_dir)
+
+    physio_data_df["pulse_raw"] = physio_data_df["Serial Receive:1(1,1)"]
+    physio_data_df["gsr_raw"] = physio_data_df["Serial Receive:1(2,1)"].apply(
+        lambda x: (1e6) / (((1024.0 + 2.0 * x) * 10000.0) / (775.0 - x + 1e-6))
+    )
+
+    start_time1 = pd.to_datetime("24-Mar-2026 10:50:07")  # hardware start
+    start_time2 = pd.to_datetime("24-Mar-2026 10:50:47")  # physio start
+
+    data_df_copy = bunting_df.copy()
+    physio_data_df_copy = physio_data_df.copy()
+
+    # physio scaling to adjust simulation time to correspond hardware time. We assume linear scaling.
+    physio_exec_time = 4195.451546541
+    physio_sim_time = physio_data_df["time"].values[-1]
+    physio_data_df_copy["time"] = physio_data_df_copy["time"] * (
+        physio_exec_time / physio_sim_time
+    )
+
+    data_df_copy["time"] = (
+        data_df_copy.time.apply(lambda x: pd.to_timedelta(x, unit="s")) + start_time1
+    )
+    physio_data_df_copy["time"] = (
+        physio_data_df_copy.time.apply(lambda x: pd.to_timedelta(x, unit="s"))
+        + start_time2
+    )
+
+    data_df = pd.merge_asof(
+        data_df_copy,
+        physio_data_df_copy,
+        on="time",
+        direction="nearest",
+        tolerance=pd.Timedelta("10ms"),
+    )
+
+    data_df["time"] = data_df["time"] - start_time1
+    data_df["time"] = data_df["time"].dt.total_seconds()
+
+    # fig, ax = plt.subplots(3, 1, sharex=True)
+
+    # ax[0].plot(data_df['time'].values, data_df["pulse_raw"].values)
+    # ax[1].plot(data_df['time'].values, data_df["gsr_raw"].values)
+    # ax[2].plot(data_df['time'].values, data_df["p2-raw"].values)
+
+    # ax[0].grid(True, axis="both")
+    # ax[1].grid(True, axis="both")
+    # ax[2].grid(True, axis="both")
+
+    # ax[0].set_ylabel("Pulse Raw")
+    # ax[1].set_ylabel("GSR Raw")
+    # ax[2].set_ylabel("Angular Position Raw")
+
+    # ax[2].set_xlabel("time (s)")
+    # ax[2].set_xticks(np.arange(0, data_df['time'].values[-1], 60*5))
+
+    # plt.gcf().set_size_inches(12,6)
+    # plt.show()
+    return data_df
+
+
+def load_and_clean_data(buntpath, physiopath, time_col="time"):
+    df_bunt = pd.read_excel(buntpath)
+    # rename new Excel column names to your old internal names
+    df_bunt = df_bunt.rename(
+        columns={
+            "p1": "angle_p1",
+            "x": "angle_p2",
+        }
+    )
+
+    # check required columns exist
+    required = ["time", "angle_p1", "angle_p2"]
+    missing = [c for c in required if c not in df_bunt.columns]
+    if missing:
+        raise ValueError(
+            f"Missing required columns: {missing}\nAvailable columns: {list(df_bunt.columns)}"
+        )
+
+    df_bunt = df_bunt.sort_values(time_col)
+    df_bunt = df_bunt.groupby(time_col, as_index=False).mean()
+    df_combined = load_physio_data(physiopath, df_bunt)
+    # df_combined = pd.concat([df_bunt, df_physio], axis=1)
+    return df_combined
 
 
 def unwrap_angles(df, col1="angle_p1", col2="angle_p2"):
@@ -253,14 +333,6 @@ def detect_phase_transitions(
     smooth_k=3,
     min_dwell=2,
 ):
-    """
-    Detect coordination transitions from windowed relative phase summaries.
-
-    A transition is flagged when:
-    1. the smoothed mean phase changes enough between adjacent windows
-       OR phase variability becomes large
-    2. the new state persists for at least min_dwell windows
-    """
     if len(windows) < max(3, min_dwell + 1):
         return [], {}
 
@@ -277,7 +349,6 @@ def detect_phase_transitions(
     if std_thresh is None:
         std_thresh = np.nanmean(stds_smooth) + np.nanstd(stds_smooth)
 
-    # Save smoothed values and labels back into each window
     for i, w in enumerate(windows):
         w["mean_smooth"] = means_smooth[i]
         w["std_smooth"] = stds_smooth[i]
@@ -290,8 +361,11 @@ def detect_phase_transitions(
 
     transitions = []
     used = set()
+    prev_idx = 0
 
     for idx in candidate_idx:
+        idx = int(idx)
+
         if idx == 0 or idx in used:
             continue
 
@@ -301,7 +375,6 @@ def detect_phase_transitions(
         old_label = classify_phase_state(old_state_angle)
         new_label = classify_phase_state(new_state_angle)
 
-        # Skip transitions between the same state since it's false positive
         if old_label == new_label:
             continue
 
@@ -311,8 +384,6 @@ def detect_phase_transitions(
         if len(future) < min_dwell:
             continue
 
-        # Persistence rule: future windows must stay closer to new state
-        # than to old state
         stays_new = []
         for f in future:
             d_new = circular_distance(f, new_state_angle)
@@ -320,18 +391,30 @@ def detect_phase_transitions(
             stays_new.append(d_new < d_old)
 
         if all(stays_new):
-            transitions.append(
-                {
-                    "idx": idx,
-                    "time": centers[idx],
-                    "from_phase": old_state_angle,
-                    "to_phase": new_state_angle,
-                    "from_state": old_label,
-                    "to_state": new_label,
-                    "phase_jump": phase_jump[idx],
-                    "std": stds_smooth[idx],
+            transition = {
+                "idx": idx,
+                "time": float(centers[idx]),
+                "from_phase": old_state_angle,
+                "to_phase": new_state_angle,
+                "from_state": old_label,
+                "to_state": new_label,
+                "phase_jump": float(phase_jump[idx]),
+                "std": float(stds_smooth[idx]),
+            }
+
+            if prev_idx is not None:
+                prev_i = int(prev_idx)
+                transition["duration"] = {
+                    "start": float(centers[prev_i]),
+                    "end": float(centers[idx]),
+                    "length": float(centers[idx] - centers[prev_i]),
+                    "state": old_label,
                 }
-            )
+            else:
+                transition["duration"] = None
+
+            transitions.append(transition)
+            prev_idx = idx
 
             for j in range(max(0, idx - 1), min(len(means_smooth), idx + min_dwell)):
                 used.add(j)
@@ -503,6 +586,30 @@ def plot_transition_types(transitions):
     plt.bar(unique, counts)
 
     plt.xlabel("Transition type")
+    plt.ylabel("Count")
+    plt.title("Phase Transition Types")
+    plt.xticks(rotation=30)
+    plt.grid(True)
+
+    plt.show()
+
+
+def plot_state_histogram(transitions):
+    """
+    Plot frequency of transition types (state-to-state).
+    """
+    if len(transitions) == 0:
+        print("No transitions to plot.")
+        return
+
+    labels = [f"{tr['duration']['state']}" for tr in transitions]
+
+    unique, counts = np.unique(labels, return_counts=True)
+
+    plt.figure(figsize=(8, 4))
+    plt.bar(unique, counts)
+
+    plt.xlabel("Coordination State")
     plt.ylabel("Count")
     plt.title("Phase Transition Types")
     plt.xticks(rotation=30)
@@ -881,6 +988,7 @@ def plot_transition_diagnostics(
 
 def run_full_pipeline(
     filepath,
+    physiopath,
     start,
     end,
     dt=0.001,
@@ -890,7 +998,8 @@ def run_full_pipeline(
     smooth_k=3,
     min_dwell=2,
 ):
-    df_raw = load_and_clean_data(filepath)
+    df_raw = load_and_clean_data(filepath, physiopath)
+    print(df_raw.head())
     df = divide_data(df_raw, start, end)
     df = unwrap_angles(df)
 
@@ -924,7 +1033,7 @@ def run_full_pipeline(
 # ============================================================
 
 # df_processed, phase_windows, transitions, transition_summary = run_full_pipeline(
-#     "data/nc0304_pilot_data_truncated.xlsx",
+#     "data/am0324_analysis/20260324_buntingphysio_bunt_am0324.xlsx",
 #     1200,
 #     2000,
 #     dt=0.001,

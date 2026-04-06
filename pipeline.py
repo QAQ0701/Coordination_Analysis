@@ -26,51 +26,37 @@ def load_physio_data(physio_dir, bunting_df):
     data_df_copy = bunting_df.copy()
     physio_data_df_copy = physio_data_df.copy()
 
-    # physio scaling to adjust simulation time to correspond hardware time. We assume linear scaling.
+    # linear scaling
     physio_exec_time = 4195.451546541
-    physio_sim_time = physio_data_df["time"].values[-1]
+    physio_sim_time = physio_data_df_copy["time"].iloc[-1]
     physio_data_df_copy["time"] = physio_data_df_copy["time"] * (
         physio_exec_time / physio_sim_time
     )
 
-    data_df_copy["time"] = (
-        data_df_copy.time.apply(lambda x: pd.to_timedelta(x, unit="s")) + start_time1
-    )
-    physio_data_df_copy["time"] = (
-        physio_data_df_copy.time.apply(lambda x: pd.to_timedelta(x, unit="s"))
-        + start_time2
-    )
+    # convert to absolute timestamps
+    data_df_copy["time"] = pd.to_timedelta(data_df_copy["time"], unit="s") + start_time1
+    physio_data_df_copy["time"] = pd.to_timedelta(physio_data_df_copy["time"], unit="s") + start_time2
 
+    # VERY IMPORTANT: sort both before merge_asof
+    data_df_copy = data_df_copy.sort_values("time").reset_index(drop=True)
+    physio_data_df_copy = physio_data_df_copy.sort_values("time").reset_index(drop=True)
+
+    print("Bunting time range:", data_df_copy["time"].min(), "to", data_df_copy["time"].max())
+    print("Physio  time range:", physio_data_df_copy["time"].min(), "to", physio_data_df_copy["time"].max())
+    # temporarily use a looser tolerance to debug
     data_df = pd.merge_asof(
         data_df_copy,
         physio_data_df_copy,
         on="time",
         direction="nearest",
-        tolerance=pd.Timedelta("10ms"),
+        tolerance=pd.Timedelta("10ms"),   # originally 10
     )
 
-    data_df["time"] = data_df["time"] - start_time1
-    data_df["time"] = data_df["time"].dt.total_seconds()
-
-    # fig, ax = plt.subplots(3, 1, sharex=True)
-
-    # ax[0].plot(data_df['time'].values, data_df["pulse_raw"].values)
-    # ax[1].plot(data_df['time'].values, data_df["gsr_raw"].values)
-    # ax[2].plot(data_df['time'].values, data_df["p2-raw"].values)
-
-    # ax[0].grid(True, axis="both")
-    # ax[1].grid(True, axis="both")
-    # ax[2].grid(True, axis="both")
-
-    # ax[0].set_ylabel("Pulse Raw")
-    # ax[1].set_ylabel("GSR Raw")
-    # ax[2].set_ylabel("Angular Position Raw")
-
-    # ax[2].set_xlabel("time (s)")
-    # ax[2].set_xticks(np.arange(0, data_df['time'].values[-1], 60*5))
-
-    # plt.gcf().set_size_inches(12,6)
-    # plt.show()
+    data_df["time"] = (data_df["time"] - start_time1).dt.total_seconds()
+    
+    physio_cols = ["Serial Receive:1(1,1)", "Serial Receive:1(2,1)", "pulse_raw", "gsr_raw"]
+    print(data_df[physio_cols].isna().mean())
+    
     return data_df
 
 
@@ -96,6 +82,7 @@ def load_and_clean_data(buntpath, physiopath, time_col="time"):
     df_bunt = df_bunt.groupby(time_col, as_index=False).mean()
     df_combined = load_physio_data(physiopath, df_bunt)
     # df_combined = pd.concat([df_bunt, df_physio], axis=1)
+    print("checking physio data:", df_combined[df_combined["pulse_raw"].notna()].head(1)[["time", "pulse_raw", "gsr_raw"]])
     return df_combined
 
 
@@ -110,7 +97,9 @@ def resample_signals(
     dt_target=0.001,
     angle_cols=("p1_unwrapped", "p2_unwrapped"),
     current_cols=("i1", "i2"),
+    physio_cols=("pulse_raw", "gsr_raw"),
     time_col="time",
+    
 ):
     z = df[time_col].to_numpy()
     t_new = np.arange(z.min(), z.max() + dt_target / 2, dt_target)
@@ -123,6 +112,16 @@ def resample_signals(
 
     # Linear interpolation for currents
     for c in current_cols:
+        out[c] = interp1d(
+            z,
+            df[c].to_numpy(),
+            kind="linear",
+            bounds_error=False,
+            fill_value="extrapolate",
+        )(t_new)
+    
+        # Linear interpolation for physio signals
+    for c in physio_cols:
         out[c] = interp1d(
             z,
             df[c].to_numpy(),
@@ -159,6 +158,8 @@ def compute_dynamics(df_rs, dt, torque_constant=0.011, smooth=True):
     df_rs["omega2"] = omega2
     df_rs["torque1"] = df_rs["i1"] * torque_constant
     df_rs["torque2"] = df_rs["i2"] * torque_constant
+    # heartrate = df_rs[pulse_raw]
+    
 
     return df_rs
 
@@ -999,11 +1000,11 @@ def run_full_pipeline(
     min_dwell=2,
 ):
     df_raw = load_and_clean_data(filepath, physiopath)
-    print(df_raw.head())
     df = divide_data(df_raw, start, end)
     df = unwrap_angles(df)
-
+    # print(df.head(), "\n")
     df_rs = resample_signals(df, dt_target=dt)
+    # print(df_rs.head())
     df_rs = compute_dynamics(df_rs, dt)
 
     t = df_rs["time"].to_numpy()

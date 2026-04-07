@@ -8,6 +8,7 @@ from pyleoclim.utils.correlation import association
 from scipy.stats import ttest_ind
 from itertools import combinations
 import neurokit2 as nk
+from collections import Counter
 
 condition_dict = {
     0: "static practice",
@@ -1106,86 +1107,193 @@ def plot_transition_histogram(transitions, bins=20, density=False):
     plt.show()
 
 
-def plot_transition_bar(transitions, bin_width=1.0):
-    """
-    Plot bar chart of transition counts over time bins.
+# def plot_transition_bar(transitions, bin_width=1.0):
+#     """
+#     Plot bar chart of transition counts over time bins
+#     and label total counts by transition type.
 
-    Parameters
-    ----------
-    transitions : list of dict
-    bin_width : float
-        Width of time bins (seconds)
-    """
-    if len(transitions) == 0:
-        print("No transitions to plot.")
-        return
+#     Parameters
+#     ----------
+#     transitions : list of dict
+#         Each dict should contain:
+#             - "time"
+#             - optionally "label" or "transition_type"
+#     bin_width : float
+#         Width of time bins (seconds)
+#     """
+#     if len(transitions) == 0:
+#         print("No transitions to plot.")
+#         return
 
-    times = np.array([tr["time"] for tr in transitions])
+#     # -----------------------------
+#     # Extract times
+#     # -----------------------------
+#     times = np.array([tr["time"] for tr in transitions])
 
-    t_min = np.min(times)
-    t_max = np.max(times)
+#     t_min = np.min(times)
+#     t_max = np.max(times)
 
-    bins = np.arange(t_min, t_max + bin_width, bin_width)
-    counts, edges = np.histogram(times, bins=bins)
+#     bins = np.arange(t_min, t_max + bin_width, bin_width)
+#     counts, edges = np.histogram(times, bins=bins)
+#     centers = 0.5 * (edges[:-1] + edges[1:])
 
-    centers = 0.5 * (edges[:-1] + edges[1:])
+#     # -----------------------------
+#     # Count transition types
+#     # -----------------------------
+#     labels = []
+#     for tr in transitions:
+#         if "label" in tr:
+#             labels.append(tr["label"])
+#         elif "transition_type" in tr:
+#             labels.append(tr["transition_type"])
+#         elif "from_state" in tr and "to_state" in tr:
+#             labels.append(f'{tr["from_state"]} to {tr["to_state"]}')
+#         else:
+#             labels.append("unknown")
 
-    plt.figure(figsize=(10, 4))
-    plt.bar(centers, counts, width=3)  # bin_width * 0.1)
+#     label_counts = Counter(labels)
+#     total_transitions = len(transitions)
 
-    plt.xlabel("Time (s)")
-    plt.ylabel("Number of transitions")
-    plt.title("Phase Transition Frequency (Bar Plot)")
-    plt.grid(True)
+#     # -----------------------------
+#     # Plot
+#     # -----------------------------
+#     fig, ax = plt.subplots(figsize=(12, 5))
+#     ax.bar(centers, counts, width=bin_width * 0.9)
 
-    plt.show()
+#     ax.set_xlabel("Time (s)")
+#     ax.set_ylabel("Number of transitions")
+#     ax.set_title("Phase Transition Frequency (Bar Plot)")
+#     ax.grid(True, alpha=0.3)
+
+#     # -----------------------------
+#     # Build annotation text
+#     # -----------------------------
+#     summary_text = [f"Total transitions: {total_transitions}"]
+#     for label, n in sorted(label_counts.items()):
+#         summary_text.append(f"{label}: {n}")
+
+#     summary_str = "\n".join(summary_text)
+
+#     # Put summary text on plot
+#     ax.text(
+#         1.02, 0.98,
+#         summary_str,
+#         transform=ax.transAxes,
+#         va="top",
+#         ha="left",
+#         fontsize=10,
+#         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9)
+#     )
+
+#     plt.tight_layout()
+#     plt.show()
 
 
 def plot_transition_types(transitions):
     """
-    Plot frequency of transition types (state-to-state).
+    Plot frequency of transition types (state-to-state),
+    with counts per type and total count shown.
     """
     if len(transitions) == 0:
         print("No transitions to plot.")
         return
 
     labels = [f"{tr['from_state']}→{tr['to_state']}" for tr in transitions]
+    label_counts = Counter(labels)
 
-    unique, counts = np.unique(labels, return_counts=True)
+    unique = list(label_counts.keys())
+    counts = list(label_counts.values())
+    total_count = sum(counts)
 
-    plt.figure(figsize=(8, 4))
-    plt.bar(unique, counts)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(unique, counts)
 
-    plt.xlabel("Transition type")
-    plt.ylabel("Count")
-    plt.title("Phase Transition Types")
-    plt.xticks(rotation=30)
-    plt.grid(True)
+    ax.set_xlabel("Transition type")
+    ax.set_ylabel("Count")
+    ax.set_title("Phase Transition Types")
+    ax.set_xticklabels(unique, rotation=30, ha="right")
+    ax.grid(True, alpha=0.3)
 
+    # label each bar
+    for bar, count in zip(bars, counts):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            str(count),
+            ha="center",
+            va="bottom"
+        )
+
+    # summary text box
+    summary_text = [f"Total transitions: {total_count}"]
+    for label, count in sorted(label_counts.items()):
+        summary_text.append(f"{label}: {count}")
+
+    ax.text(
+        1.02, 0.98,
+        "\n".join(summary_text),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9)
+    )
+
+    plt.tight_layout()
     plt.show()
 
 
 def plot_state_histogram(transitions):
     """
-    Plot frequency of transition types (state-to-state).
+    Plot frequency of coordination states from transitions,
+    with counts per state and total count shown.
     """
     if len(transitions) == 0:
         print("No transitions to plot.")
         return
 
-    labels = [f"{tr['duration']['state']}" for tr in transitions]
+    labels = [tr["duration"]["state"] for tr in transitions]
+    label_counts = Counter(labels)
 
-    unique, counts = np.unique(labels, return_counts=True)
+    unique = list(label_counts.keys())
+    counts = list(label_counts.values())
+    total_count = sum(counts)
 
-    plt.figure(figsize=(8, 4))
-    plt.bar(unique, counts)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(unique, counts)
 
-    plt.xlabel("Coordination State")
-    plt.ylabel("Count")
-    plt.title("Phases")
-    plt.xticks(rotation=30)
-    plt.grid(True)
+    ax.set_xlabel("Coordination State")
+    ax.set_ylabel("Count")
+    ax.set_title("Phases")
+    ax.set_xticklabels(unique, rotation=30, ha="right")
+    ax.grid(True, alpha=0.3)
 
+    # label each bar
+    for bar, count in zip(bars, counts):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            str(count),
+            ha="center",
+            va="bottom"
+        )
+
+    # summary text box
+    summary_text = [f"Total phases: {total_count}"]
+    for label, count in sorted(label_counts.items()):
+        summary_text.append(f"{label}: {count}")
+
+    ax.text(
+        1.02, 0.98,
+        "\n".join(summary_text),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9)
+    )
+
+    plt.tight_layout()
     plt.show()
 
 

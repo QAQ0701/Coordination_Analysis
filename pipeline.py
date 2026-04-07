@@ -399,15 +399,22 @@ def load_physio_data(physio_dir, bunting_df):
     return data_df
 
 
-def load_and_clean_data(buntpath, physiopath, time_col="time"):
+def load_and_clean_data(buntpath, physiopath=None, time_col="time"):
     df_bunt = pd.read_excel(buntpath)
-    # rename new Excel column names to your old internal names
-    df_bunt = df_bunt.rename(
-        columns={
-            "p1": "angle_p1",
-            "x": "angle_p2",
-        }
-    )
+
+    # Only rename if old internal names do not already exist
+    rename_map = {}
+
+    if "angle_p1" not in df_bunt.columns and "p1" in df_bunt.columns:
+        rename_map["p1"] = "angle_p1"
+
+    if "angle_p2" not in df_bunt.columns:
+        if "x" in df_bunt.columns:
+            rename_map["x"] = "angle_p2"
+        elif "p2" in df_bunt.columns:
+            rename_map["p2"] = "angle_p2"
+
+    df_bunt = df_bunt.rename(columns=rename_map)
 
     # check required columns exist
     required = ["time", "angle_p1", "angle_p2"]
@@ -419,14 +426,18 @@ def load_and_clean_data(buntpath, physiopath, time_col="time"):
 
     df_bunt = df_bunt.sort_values(time_col)
     df_bunt = df_bunt.groupby(time_col, as_index=False).mean()
-    df_combined = load_physio_data(physiopath, df_bunt)
-    # df_combined = pd.concat([df_bunt, df_physio], axis=1)
-    print(
-        "checking physio data:",
-        df_combined[df_combined["pulse_raw"].notna()].head(1)[
-            ["time", "pulse_raw", "gsr_raw"]
-        ],
-    )
+
+    if physiopath is not None:
+        df_combined = load_physio_data(physiopath, df_bunt)
+        print(
+            "checking physio data:",
+            df_combined[df_combined["pulse_raw"].notna()].head(1)[
+                ["time", "pulse_raw", "gsr_raw"]
+            ],
+        )
+    else:
+        df_combined = df_bunt
+
     return df_combined
 
 
@@ -472,6 +483,35 @@ def resample_signals(
             bounds_error=False,
             fill_value="extrapolate",
         )(t_new)
+
+    return pd.DataFrame(out)
+
+def test_resample_signals(
+    df,
+    dt_target=0.001,
+    angle_cols=("p1_unwrapped", "p2_unwrapped"),
+    current_cols=("i1", "i2"),
+    time_col="time",
+):
+    z = df[time_col].to_numpy()
+    t_new = np.arange(z.min(), z.max() + dt_target / 2, dt_target)
+
+    out = {time_col: t_new}
+
+    # PCHIP for angles
+    for c in angle_cols:
+        out[c] = PchipInterpolator(z, df[c].to_numpy())(t_new)
+
+    # Linear interpolation for currents
+    for c in current_cols:
+        out[c] = interp1d(
+            z,
+            df[c].to_numpy(),
+            kind="linear",
+            bounds_error=False,
+            fill_value="extrapolate",
+        )(t_new)
+
 
     return pd.DataFrame(out)
 
@@ -716,7 +756,7 @@ def circular_distance(a, b):
 
 def detect_phase_transitions(
     windows,
-    bpm_df,
+    bpm_df = None,
     phase_jump_thresh=np.deg2rad(50),
     std_thresh=None,
     smooth_k=3,
@@ -823,18 +863,19 @@ def detect_phase_transitions(
             }
 
             transition["prev_bpm"] = np.nan
-            if len(transitions) > 0:
-                prev_start = transitions[-1]["duration"]["start"]
-                prev_end = transitions[-1]["duration"]["end"]
+            if bpm_df is not None:
+                if len(transitions) > 0:
+                    prev_start = transitions[-1]["duration"]["start"]
+                    prev_end = transitions[-1]["duration"]["end"]
+                    
+                    bpm_segment = bpm_df.loc[
+                        (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end), "bpm"
+                    ]
 
-                bpm_segment = bpm_df.loc[
-                    (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end), "bpm"
-                ]
+                    prev_bpm = bpm_segment.mean()
+                    transition["prev_bpm"] = prev_bpm
 
-                prev_bpm = bpm_segment.mean()
-                transition["prev_bpm"] = prev_bpm
-
-                bpms[f"{old_label} to {new_label}"].append(prev_bpm)
+                    bpms[f"{old_label} to {new_label}"].append(prev_bpm)
 
             transitions.append(transition)
             prev_idx = idx
@@ -1805,11 +1846,15 @@ def test_pipeline(
     min_dwell=2,
 ):
     df_raw = load_and_clean_data(filepath)
+
+    print(df_raw.columns.tolist())
+    print(df_raw.columns[df_raw.columns.duplicated()].tolist())
+
     df = divide_data(df_raw, start, end)
     df = unwrap_angles(df)
 
-    df_rs = resample_signals(df, dt_target=dt)
-    df_rs = compute_dynamics(df_rs, dt)
+    df_rs = test_resample_signals(df, dt_target=dt)
+    # df_rs = compute_dynamics(df_rs, dt)
 
     t = df_rs["time"].to_numpy()
     theta1 = df_rs["p1_unwrapped"].to_numpy()

@@ -5,6 +5,7 @@ from pyleoclim.utils.wavelet import cwt_coherence
 from scipy.interpolate import PchipInterpolator, interp1d
 from scipy.signal import savgol_filter
 from pyleoclim.utils.correlation import association
+import neurokit2 as nk
 
 
 # ============================================================
@@ -35,28 +36,45 @@ def load_physio_data(physio_dir, bunting_df):
 
     # convert to absolute timestamps
     data_df_copy["time"] = pd.to_timedelta(data_df_copy["time"], unit="s") + start_time1
-    physio_data_df_copy["time"] = pd.to_timedelta(physio_data_df_copy["time"], unit="s") + start_time2
+    physio_data_df_copy["time"] = (
+        pd.to_timedelta(physio_data_df_copy["time"], unit="s") + start_time2
+    )
 
     # VERY IMPORTANT: sort both before merge_asof
     data_df_copy = data_df_copy.sort_values("time").reset_index(drop=True)
     physio_data_df_copy = physio_data_df_copy.sort_values("time").reset_index(drop=True)
 
-    print("Bunting time range:", data_df_copy["time"].min(), "to", data_df_copy["time"].max())
-    print("Physio  time range:", physio_data_df_copy["time"].min(), "to", physio_data_df_copy["time"].max())
+    print(
+        "Bunting time range:",
+        data_df_copy["time"].min(),
+        "to",
+        data_df_copy["time"].max(),
+    )
+    print(
+        "Physio  time range:",
+        physio_data_df_copy["time"].min(),
+        "to",
+        physio_data_df_copy["time"].max(),
+    )
     # temporarily use a looser tolerance to debug
     data_df = pd.merge_asof(
         data_df_copy,
         physio_data_df_copy,
         on="time",
         direction="nearest",
-        tolerance=pd.Timedelta("10ms"),   # originally 10
+        tolerance=pd.Timedelta("10ms"),  # originally 10
     )
 
     data_df["time"] = (data_df["time"] - start_time1).dt.total_seconds()
-    
-    physio_cols = ["Serial Receive:1(1,1)", "Serial Receive:1(2,1)", "pulse_raw", "gsr_raw"]
+
+    physio_cols = [
+        "Serial Receive:1(1,1)",
+        "Serial Receive:1(2,1)",
+        "pulse_raw",
+        "gsr_raw",
+    ]
     print(data_df[physio_cols].isna().mean())
-    
+
     return data_df
 
 
@@ -82,7 +100,12 @@ def load_and_clean_data(buntpath, physiopath, time_col="time"):
     df_bunt = df_bunt.groupby(time_col, as_index=False).mean()
     df_combined = load_physio_data(physiopath, df_bunt)
     # df_combined = pd.concat([df_bunt, df_physio], axis=1)
-    print("checking physio data:", df_combined[df_combined["pulse_raw"].notna()].head(1)[["time", "pulse_raw", "gsr_raw"]])
+    print(
+        "checking physio data:",
+        df_combined[df_combined["pulse_raw"].notna()].head(1)[
+            ["time", "pulse_raw", "gsr_raw"]
+        ],
+    )
     return df_combined
 
 
@@ -99,7 +122,6 @@ def resample_signals(
     current_cols=("i1", "i2"),
     physio_cols=("pulse_raw", "gsr_raw"),
     time_col="time",
-    
 ):
     z = df[time_col].to_numpy()
     t_new = np.arange(z.min(), z.max() + dt_target / 2, dt_target)
@@ -119,7 +141,7 @@ def resample_signals(
             bounds_error=False,
             fill_value="extrapolate",
         )(t_new)
-    
+
         # Linear interpolation for physio signals
     for c in physio_cols:
         out[c] = interp1d(
@@ -159,7 +181,51 @@ def compute_dynamics(df_rs, dt, torque_constant=0.011, smooth=True):
     df_rs["torque1"] = df_rs["i1"] * torque_constant
     df_rs["torque2"] = df_rs["i2"] * torque_constant
     # heartrate = df_rs[pulse_raw]
-    
+    # Sampling interval and sampling rate
+    # dt = np.diff(df_processed["time"]).mean()   # sec/sample
+    fs = int(round(1 / dt))  # Hz, make sure it's an integer
+
+    # ---------------- PPG ----------------
+    ppg_raw = df_rs["pulse_raw"].to_numpy()
+
+    ppg_signals, ppg_info = nk.ppg_process(ppg_raw, sampling_rate=fs)
+
+    nk.ppg_plot(ppg_signals, ppg_info)
+    fig = plt.gcf()
+    fig.set_size_inches(10, 12, forward=True)
+    plt.show()
+
+    print(nk.ppg_intervalrelated(ppg_signals, sampling_rate=fs))
+
+    nk.hrv(ppg_signals["PPG_Peaks"], sampling_rate=fs, show=True)
+    fig = plt.gcf()
+    fig.set_size_inches(16, 6, forward=True)
+    plt.show()
+
+    # Optional BPM output
+    print("Mean BPM:", np.nanmean(ppg_signals["PPG_Rate"]))
+
+    # ---------------- EDA ----------------
+    eda_raw = df_rs["gsr_raw"].to_numpy()
+
+    eda_signals, eda_info = nk.eda_process(eda_raw, sampling_rate=fs)
+
+    nk.eda_plot(eda_signals, eda_info)
+    fig = plt.gcf()
+    fig.set_size_inches(10, 12, forward=True)
+    plt.show()
+
+    eda_summary = nk.eda_intervalrelated(eda_signals, sampling_rate=fs)
+    print(eda_summary)
+
+    print("SCR count:", int(eda_signals["SCR_Peaks"].sum()))
+    df_rs["bpm"] = ppg_signals["PPG_Rate"].values
+
+    df_rs["eda_clean"] = eda_signals["EDA_Clean"].values
+    df_rs["eda_tonic"] = eda_signals["EDA_Tonic"].values
+    df_rs["eda_phasic"] = eda_signals["EDA_Phasic"].values
+    df_rs["scr_peaks"] = eda_signals["SCR_Peaks"].values
+    df_rs["scr_amplitude"] = eda_signals["SCR_Amplitude"].values
 
     return df_rs
 
@@ -356,6 +422,8 @@ def detect_phase_transitions(
         w["phase_jump"] = phase_jump[i]
         w["state"] = classify_phase_state(means_smooth[i])
 
+    states = np.array([w["state"] for w in windows])
+
     candidate_idx = np.where(
         (phase_jump >= phase_jump_thresh) | (stds_smooth >= std_thresh)
     )[0]
@@ -370,17 +438,30 @@ def detect_phase_transitions(
         if idx == 0 or idx in used:
             continue
 
+        end_idx = min(len(means_smooth), idx + min_dwell)
+        future = means_smooth[idx:end_idx]
+        future_states = states[idx:end_idx]
+
+        unique, counts = np.unique(future_states, return_counts=True)
+        count_dict = dict(zip(unique, counts))
+        print(count_dict)
+
         old_state_angle = means_smooth[idx - 1]
         new_state_angle = means_smooth[idx]
 
-        old_label = classify_phase_state(old_state_angle)
-        new_label = classify_phase_state(new_state_angle)
+        old_label = (
+            transitions[-1]["to_state"]
+            if len(transitions)
+            else classify_phase_state(old_state_angle)
+        )
 
+        new_label = (
+            unique[np.argmax(counts)]
+            if len(future_states) > 1
+            else classify_phase_state(new_state_angle)
+        )
         if old_label == new_label:
             continue
-
-        end_idx = min(len(means_smooth), idx + min_dwell)
-        future = means_smooth[idx:end_idx]
 
         if len(future) < min_dwell:
             continue
@@ -439,15 +520,26 @@ def detect_phase_transitions(
 # ============================================================
 
 
-def plot_angles(t, theta1, theta2):
-    plt.figure(figsize=(12, 4))
-    plt.plot(t, theta1, label="p1")
-    plt.plot(t, theta2, label="p2")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Angle (rad)")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+# def plot_angles(t, theta1, theta2):
+#     plt.figure(figsize=(12, 4))
+#     plt.plot(t, theta1, label="p1")
+#     plt.plot(t, theta2, label="p2")
+#     plt.xlabel("Time (s)")
+#     plt.ylabel("Angle (rad)")
+#     plt.legend()
+#     plt.grid(True)
+#     plt.show()
+
+
+def plot_1(t, data, label, y_unit="Angle (rad)", ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(24, 4))
+    ax.plot(t, data, label=label)
+    ax.set_ylabel(y_unit)
+    ax.legend()
+    ax.grid(True)
+
+    return ax
 
 
 def plot_angular_velocity(t, omega1, omega2):
@@ -612,7 +704,7 @@ def plot_state_histogram(transitions):
 
     plt.xlabel("Coordination State")
     plt.ylabel("Count")
-    plt.title("Phase Transition Types")
+    plt.title("Phases")
     plt.xticks(rotation=30)
     plt.grid(True)
 
@@ -667,12 +759,12 @@ def plot_phase_transitions(summary, transitions, df_processed):
     }
 
     transition_colors = {
-        "in-phase to anti-phase": "purple",
-        "anti-phase to in-phase": "blue",
-        "in-phase to intermediate": "brown",
-        "intermediate to in-phase": "brown",
-        "anti-phase to intermediate": "brown",
-        "intermediate to anti-phase": "brown",
+        "in-phase to anti-phase": "red",
+        "anti-phase to in-phase": "green",
+        "in-phase to intermediate": "orange",
+        "intermediate to in-phase": "orange",
+        "anti-phase to intermediate": "orange",
+        "intermediate to anti-phase": "orange",
     }
 
     # Classify each smoothed mean phase point
@@ -770,6 +862,114 @@ def plot_phase_transitions(summary, transitions, df_processed):
             fontsize=9,
             rotation=90,
             va="bottom",
+            ha="right",
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"),
+        )
+
+    # =========================================================
+    # Custom legend for state colors
+    # =========================================================
+    from matplotlib.lines import Line2D
+
+    legend_elements = [
+        Line2D(
+            [0],
+            [0],
+            color="red",
+            lw=2,
+            linestyle="--",
+            label="In-phase to Anti-phase",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="green",
+            lw=2,
+            linestyle="--",
+            label="Anti-phase to In-phase",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="orange",
+            lw=2,
+            linestyle="--",
+            label="Transitions to/from Intermediate",
+        ),
+    ]
+
+    axes[1].legend(handles=legend_elements, loc="upper right")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_bmp(df_processed, transitions, summary=None):
+    if not summary:
+        print("No transition summary to plot.")
+        return
+
+    centers = summary["centers"]
+    means_smooth = summary["means_smooth"]
+    # -----------------------------
+    # State -> color mapping
+    # -----------------------------
+    state_colors = {
+        "in-phase": "green",
+        "anti-phase": "red",
+        "intermediate": "orange",
+    }
+
+    transition_colors = {
+        "in-phase to anti-phase": "purple",
+        "anti-phase to in-phase": "blue",
+        "in-phase to intermediate": "brown",
+        "intermediate to in-phase": "brown",
+        "anti-phase to intermediate": "brown",
+        "intermediate to anti-phase": "brown",
+    }
+
+    # Classify each smoothed mean phase point
+    states = [classify_phase_state(m) for m in means_smooth]
+    point_colors = [state_colors.get(s, "black") for s in states]
+
+    fig, axes = plt.subplots(2, 1, figsize=(24, 20), sharex=True)
+    plot_1(
+        df_processed["time"],
+        df_processed["p1_unwrapped"],
+        "p1_unwrapped",
+        ax=axes[0],
+    )
+    plot_1(
+        df_processed["time"],
+        df_processed["bpm"],
+        "Beats per minute (BPM)",
+        ax=axes[1],
+    )
+    axes[0].set_title("Positional Data")
+    axes[1].set_title("Heartbeat Rate (BPM)")
+
+    # =========================================================
+    # Mark transitions on all panels with state-specific colors
+    # =========================================================
+    for tr in transitions:
+        tag = f"{tr['from_state']} to {tr['to_state']}"
+        tr_color = transition_colors.get(tag, "black")
+
+        for ax in axes:
+            ax.axvline(tr["time"], color=tr_color, alpha=0.8, linestyle="--")
+
+        axes[1].text(
+            tr["time"],
+            0.95,
+            tag,
+            transform=axes[
+                1
+            ].get_xaxis_transform(),  # x in data coords, y in axis coords
+            color=tr_color,
+            fontsize=9,
+            rotation=90,
+            va="top",
             ha="right",
             bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"),
         )

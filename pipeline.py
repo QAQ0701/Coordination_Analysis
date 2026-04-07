@@ -5,13 +5,334 @@ from pyleoclim.utils.wavelet import cwt_coherence
 from scipy.interpolate import PchipInterpolator, interp1d
 from scipy.signal import savgol_filter
 from pyleoclim.utils.correlation import association
+from scipy.stats import ttest_ind
+from itertools import combinations
 import neurokit2 as nk
+
+condition_dict = {
+    0: "static practice",
+    1: "slow practice",
+    2: "fast practice",
+    3: "independant",
+    4: "follower",
+    5: "evolved",
+    6: "human-human",
+}
 
 
 # ============================================================
 # ---------------------- DATA LAYER --------------------------
 # ===========================================================
+def find_agent_select_times(df):
+    arr_ends = df["time"][df["agentSel:1"].diff(periods=-1) != 0].values.reshape(-1, 1)
+    arr_starts = df["time"][df["agentSel:1"].diff(periods=1) != 0].values.reshape(-1, 1)
+    return np.hstack((arr_starts, arr_ends))
 
+
+# def divide_by_trials(df, conditions=None, time_col="time", copy=True):
+#     """
+#     Automatically:
+#     1. calls find_agent_select_times(df)
+#     2. maps condition indices to readable trial names
+#     3. splits df into one dataframe per trial
+
+#     Parameters
+#     ----------
+#     df : pandas.DataFrame
+#         Full dataframe containing a time column.
+#     condition_dict : dict or None
+#         Maps trial index -> original condition label.
+#         If None, uses the default mapping.
+#     time_col : str
+#         Name of the time column in df.
+#     copy : bool
+#         If True, return copies of slices.
+
+#     Returns
+#     -------
+#     trial_dfs : dict
+#         {clean_trial_name: sliced_dataframe}
+#     condition_ranges : dict
+#         {clean_trial_name: (start, end)}
+#     raw_trial_times : dict or list
+#         Raw output from find_agent_select_times(df)
+#     """
+
+#     if conditions is None:
+#         global condition_dict
+#         conditions = condition_dict
+#     # Rename labels to the exact names you want in the final output
+#     name_map = {
+#         "Practice - Fixed": "static practice",
+#         "Practice - Slow": "slow practice",
+#         "Practice - Fast": "fast practice",
+#         "Condition - Independent": "independant",
+#         "Condition - Follower": "follower",
+#         "Condition - Crosser": "evolved",
+#         "Condition - Human": "human-human",
+#     }
+
+#     # ---------------------------------------------------
+#     # 1) Get trial times automatically
+#     # ---------------------------------------------------
+#     raw_trial_times = find_agent_select_times(df)
+
+#     # ---------------------------------------------------
+#     # 2) Normalize raw_trial_times into index -> (start, end)
+#     #    Supports either:
+#     #    - dict: {0: (start, end), 1: (start, end), ...}
+#     #    - list: [(start, end), (start, end), ...]
+#     # ---------------------------------------------------
+#     if isinstance(raw_trial_times, dict):
+#         indexed_times = raw_trial_times
+#     else:
+#         indexed_times = {i: t for i, t in enumerate(raw_trial_times)}
+
+#     # ---------------------------------------------------
+#     # 3) Build cleaned condition -> (start, end)
+#     # ---------------------------------------------------
+#     condition_ranges = {}
+
+#     for idx, original_label in conditions.items():
+#         if idx not in indexed_times:
+#             raise ValueError(
+#                 f"find_agent_select_times(df) did not return a time range for index {idx}"
+#             )
+
+#         start, end = indexed_times[idx]
+#         clean_label = name_map.get(original_label, original_label)
+#         condition_ranges[clean_label] = (start, end)
+
+#     # ---------------------------------------------------
+#     # 4) Split dataframe
+#     # ---------------------------------------------------
+#     trial_dfs = {}
+
+#     for label, (start, end) in condition_ranges.items():
+#         mask = (df[time_col] >= start) & (df[time_col] <= end)
+#         subdf = df.loc[mask]
+
+#         if copy:
+#             subdf = subdf.copy()
+
+#         trial_dfs[label] = subdf
+
+#     return (
+#         trial_dfs,
+#         condition_ranges,
+#     )  # raw_trial_times
+
+import numpy as np
+import pandas as pd
+
+
+def trim_inactive_region(
+    subdf,
+    signal_col="p1",
+    time_col="time",
+    activity_thresh=1e-4,
+    smooth_window=5,
+    min_active_samples=5,
+):
+    """
+    Trim leading and trailing inactivity from a trial based on p1 movement.
+
+    Inactivity is determined from the absolute first difference of `signal_col`.
+    The function keeps the region from the first sustained activity to the last
+    sustained activity.
+
+    Parameters
+    ----------
+    subdf : pandas.DataFrame
+        One trial slice.
+    signal_col : str
+        Column used to detect movement/activity.
+    time_col : str
+        Time column name.
+    activity_thresh : float
+        Threshold on smoothed absolute difference to count as active.
+    smooth_window : int
+        Rolling window size for smoothing abs(diff).
+    min_active_samples : int
+        Minimum consecutive active-ish samples required to define activity region.
+
+    Returns
+    -------
+    trimmed_df : pandas.DataFrame
+        Cropped dataframe.
+    trimmed_range : tuple
+        (new_start_time, new_end_time)
+    """
+    if subdf.empty:
+        return subdf.copy(), (np.nan, np.nan)
+
+    if signal_col not in subdf.columns:
+        raise ValueError(f"Column '{signal_col}' not found in dataframe.")
+
+    work = subdf.copy().sort_values(time_col).reset_index(drop=True)
+
+    # movement estimate: absolute point-to-point change
+    activity = work[signal_col].diff().abs()
+
+    # first diff creates NaN at first row
+    activity = activity.fillna(0)
+
+    # smooth so tiny jitter does not dominate
+    if smooth_window > 1:
+        activity = (
+            activity.rolling(window=smooth_window, center=True, min_periods=1).mean()
+        )
+
+    is_active = activity > activity_thresh
+
+    # Find first sustained active region
+    active_idx = np.flatnonzero(is_active.to_numpy())
+
+    if len(active_idx) == 0:
+        # no detected activity -> return original or empty
+        return work.iloc[0:0].copy(), (np.nan, np.nan)
+
+    # Optional robustness: require local runs of activity
+    first_idx = active_idx[0]
+    last_idx = active_idx[-1]
+
+    if min_active_samples > 1:
+        arr = is_active.to_numpy().astype(int)
+
+        # forward search for first window with enough active samples
+        first_idx = None
+        for i in range(len(arr) - min_active_samples + 1):
+            if arr[i : i + min_active_samples].sum() >= min_active_samples:
+                first_idx = i
+                break
+
+        # backward search for last window with enough active samples
+        last_idx = None
+        for i in range(len(arr) - min_active_samples, -1, -1):
+            if arr[i : i + min_active_samples].sum() >= min_active_samples:
+                last_idx = i + min_active_samples - 1
+                break
+
+        if first_idx is None or last_idx is None or first_idx > last_idx:
+            return work.iloc[0:0].copy(), (np.nan, np.nan)
+
+    trimmed = work.iloc[first_idx : last_idx + 1].copy()
+    new_start = trimmed[time_col].iloc[0]
+    new_end = trimmed[time_col].iloc[-1]
+
+    return trimmed, (new_start, new_end)
+
+
+def divide_by_trials(
+    df,
+    conditions=None,
+    time_col="time",
+    signal_col="angle_p1",
+    copy=True,
+    trim_inactive=True,
+    activity_thresh=1e-4,
+    smooth_window=5,
+    min_active_samples=5,
+):
+    """
+    Automatically:
+    1. calls find_agent_select_times(df)
+    2. maps condition indices to readable trial names
+    3. splits df into one dataframe per trial
+    4. optionally trims inactivity from the beginning/end of each trial
+       based on movement in `signal_col`
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Full dataframe containing a time column.
+    conditions : dict or None
+        Maps trial index -> original condition label.
+        If None, uses the default mapping.
+    time_col : str
+        Name of the time column in df.
+    signal_col : str
+        Signal column used to detect inactivity trimming, e.g. "p1".
+    copy : bool
+        If True, return copies of slices.
+    trim_inactive : bool
+        If True, remove leading/trailing inactive sections from each trial.
+    activity_thresh : float
+        Threshold on smoothed abs(diff(signal)) to count as activity.
+    smooth_window : int
+        Rolling smoothing window for activity detection.
+    min_active_samples : int
+        Minimum consecutive active samples for activity detection.
+
+    Returns
+    -------
+    trial_dfs : dict
+        {clean_trial_name: sliced_dataframe}
+    condition_ranges : dict
+        {clean_trial_name: (start, end)}
+    """
+    if conditions is None:
+        global condition_dict
+        conditions = condition_dict
+
+    name_map = {
+        "Practice - Fixed": "static practice",
+        "Practice - Slow": "slow practice",
+        "Practice - Fast": "fast practice",
+        "Condition - Independent": "independant",
+        "Condition - Follower": "follower",
+        "Condition - Crosser": "evolved",
+        "Condition - Human": "human-human",
+    }
+
+    # 1) Get rough trial times automatically
+    raw_trial_times = find_agent_select_times(df)
+
+    # 2) Normalize raw_trial_times into index -> (start, end)
+    if isinstance(raw_trial_times, dict):
+        indexed_times = raw_trial_times
+    else:
+        indexed_times = {i: t for i, t in enumerate(raw_trial_times)}
+
+    # 3) Build cleaned condition -> (start, end)
+    condition_ranges = {}
+    for idx, original_label in conditions.items():
+        if idx not in indexed_times:
+            raise ValueError(
+                f"find_agent_select_times(df) did not return a time range for index {idx}"
+            )
+
+        start, end = indexed_times[idx]
+        clean_label = name_map.get(original_label, original_label)
+        condition_ranges[clean_label] = (start, end)
+
+    # 4) Split dataframe and optionally trim inactivity
+    trial_dfs = {}
+    trimmed_ranges = {}
+
+    for label, (start, end) in condition_ranges.items():
+        mask = (df[time_col] >= start) & (df[time_col] <= end)
+        subdf = df.loc[mask]
+
+        if copy:
+            subdf = subdf.copy()
+
+        if trim_inactive:
+            subdf, new_range = trim_inactive_region(
+                subdf,
+                signal_col=signal_col,
+                time_col=time_col,
+                activity_thresh=activity_thresh,
+                smooth_window=smooth_window,
+                min_active_samples=min_active_samples,
+            )
+            trimmed_ranges[label] = new_range
+        else:
+            trimmed_ranges[label] = (start, end)
+
+        trial_dfs[label] = subdf
+
+    return trial_dfs, trimmed_ranges
 
 def load_physio_data(physio_dir, bunting_df):
     physio_data_df = pd.read_excel(physio_dir)
@@ -193,14 +514,14 @@ def compute_dynamics(df_rs, dt, torque_constant=0.011, smooth=True):
     nk.ppg_plot(ppg_signals, ppg_info)
     fig = plt.gcf()
     fig.set_size_inches(10, 12, forward=True)
-    plt.show()
+    # plt.show()
 
     print(nk.ppg_intervalrelated(ppg_signals, sampling_rate=fs))
 
     nk.hrv(ppg_signals["PPG_Peaks"], sampling_rate=fs, show=True)
     fig = plt.gcf()
     fig.set_size_inches(16, 6, forward=True)
-    plt.show()
+    # plt.show()
 
     # Optional BPM output
     print("Mean BPM:", np.nanmean(ppg_signals["PPG_Rate"]))
@@ -213,7 +534,7 @@ def compute_dynamics(df_rs, dt, torque_constant=0.011, smooth=True):
     nk.eda_plot(eda_signals, eda_info)
     fig = plt.gcf()
     fig.set_size_inches(10, 12, forward=True)
-    plt.show()
+    # plt.show()
 
     eda_summary = nk.eda_intervalrelated(eda_signals, sampling_rate=fs)
     print(eda_summary)
@@ -395,6 +716,7 @@ def circular_distance(a, b):
 
 def detect_phase_transitions(
     windows,
+    bpm_df,
     phase_jump_thresh=np.deg2rad(50),
     std_thresh=None,
     smooth_k=3,
@@ -406,6 +728,14 @@ def detect_phase_transitions(
     centers = np.array([w["center"] for w in windows])
     means = np.array([w["mean"] for w in windows])
     stds = np.array([w["std"] for w in windows])
+    bpms = {
+        "in-phase to anti-phase": [],
+        "anti-phase to in-phase": [],
+        "anti-phase to intermediate": [],
+        "intermediate to anti-phase": [],
+        "intermediate to in-phase": [],
+        "in-phase to intermediate": [],
+    }
 
     means_smooth = smooth_circular(means, k=smooth_k)
     stds_smooth = moving_average(stds, k=smooth_k)
@@ -444,7 +774,7 @@ def detect_phase_transitions(
 
         unique, counts = np.unique(future_states, return_counts=True)
         count_dict = dict(zip(unique, counts))
-        print(count_dict)
+        # print(count_dict)
 
         old_state_angle = means_smooth[idx - 1]
         new_state_angle = means_smooth[idx]
@@ -484,16 +814,27 @@ def detect_phase_transitions(
                 "std": float(stds_smooth[idx]),
             }
 
-            if prev_idx is not None:
-                prev_i = int(prev_idx)
-                transition["duration"] = {
-                    "start": float(centers[prev_i]),
-                    "end": float(centers[idx]),
-                    "length": float(centers[idx] - centers[prev_i]),
-                    "state": old_label,
-                }
-            else:
-                transition["duration"] = None
+            prev_i = int(prev_idx)
+            transition["duration"] = {
+                "start": float(centers[prev_i]),
+                "end": float(centers[idx]),
+                "length": float(centers[idx] - centers[prev_i]),
+                "state": old_label,
+            }
+
+            transition["prev_bpm"] = np.nan
+            if len(transitions) > 0:
+                prev_start = transitions[-1]["duration"]["start"]
+                prev_end = transitions[-1]["duration"]["end"]
+
+                bpm_segment = bpm_df.loc[
+                    (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end), "bpm"
+                ]
+
+                prev_bpm = bpm_segment.mean()
+                transition["prev_bpm"] = prev_bpm
+
+                bpms[f"{old_label} to {new_label}"].append(prev_bpm)
 
             transitions.append(transition)
             prev_idx = idx
@@ -510,9 +851,105 @@ def detect_phase_transitions(
         "phase_jump": phase_jump,
         "phase_jump_thresh": phase_jump_thresh,
         "std_thresh": std_thresh,
+        "bpms": bpms,
     }
 
     return transitions, summary
+
+
+def compute_bpm_diff(transitions):
+    bpm_diffs = []
+    for i in range(len(transitions) - 1):
+        prev_bpm = {
+            "bpm": transitions[i]["prev_bpm"],
+            "state": f'{transitions[i]["from_state"]} to {transitions[i]["to_state"]}',
+        }
+        future_bpm = {
+            "bpm": transitions[i + 1]["prev_bpm"],
+            "state": f'{transitions[i+1]["from_state"]} to {transitions[i+1]["to_state"]}',
+        }
+
+        if np.isnan(prev_bpm["bpm"]) or np.isnan(future_bpm["bpm"]):
+            continue
+        # print(prev_bpm, future_bpm)
+        bpm_diff = future_bpm["bpm"] - prev_bpm["bpm"]
+        # print("BPM diff: ", bpm_diff)
+    return bpm_diffs
+
+
+def pairwise_independent_ttests(data_dict, correction="bonferroni"):
+    """
+    Run pairwise independent Welch's t-tests between all non-empty transition groups.
+
+    Parameters
+    ----------
+    data_dict : dict
+        Example:
+        {
+            'in-phase to anti-phase': [...],
+            'anti-phase to in-phase': [...],
+            ...
+        }
+
+    correction : str
+        'bonferroni' or None
+
+    Returns
+    -------
+    results_df : pandas.DataFrame
+    """
+
+    # ---------------------------------------------------
+    # 1) Remove empty groups and convert to float arrays
+    # ---------------------------------------------------
+    clean_data = {
+        k: np.array([float(x) for x in v]) for k, v in data_dict.items() if len(v) > 1
+    }
+
+    if len(clean_data) < 2:
+        print("Need at least 2 non-empty groups with >1 value each.")
+        return pd.DataFrame()
+
+    # ---------------------------------------------------
+    # 2) Generate all pairwise comparisons
+    # ---------------------------------------------------
+    group_pairs = list(combinations(clean_data.keys(), 2))
+    m = len(group_pairs)  # number of comparisons
+
+    results = []
+
+    for g1, g2 in group_pairs:
+        x1 = clean_data[g1]
+        x2 = clean_data[g2]
+
+        # Welch's independent t-test
+        t_stat, p_val = ttest_ind(x1, x2, equal_var=False)
+
+        # optional multiple comparison correction
+        if correction == "bonferroni":
+            p_adj = min(p_val * m, 1.0)
+        else:
+            p_adj = p_val
+
+        results.append(
+            {
+                "group1": g1,
+                "group2": g2,
+                "n1": len(x1),
+                "n2": len(x2),
+                "mean1": np.mean(x1),
+                "std1": np.std(x1, ddof=1),
+                "mean2": np.mean(x2),
+                "std2": np.std(x2, ddof=1),
+                "t_stat": t_stat,
+                "p_value": p_val,
+                "p_adj": p_adj,
+                "significant": p_adj < 0.05,
+            }
+        )
+
+    results_df = pd.DataFrame(results)
+    return results_df
 
 
 # ============================================================
@@ -574,7 +1011,7 @@ def plot_windowed_phase(windows):
     means = np.array([w["mean"] for w in windows])
     stds = np.array([w["std"] for w in windows])
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(24, 20))
     plt.errorbar(centers_time, means, yerr=stds, fmt="o", capsize=4)
     plt.ylim(-np.pi * 1.05, np.pi * 1.05)
     plt.xlabel("Window center time (s)")
@@ -841,9 +1278,9 @@ def plot_phase_transitions(summary, transitions, df_processed):
         tag = f"{tr['from_state']} to {tr['to_state']}"
         tr_color = transition_colors.get(tag, "black")
         tr_label = tag
-        print("tag", tag)
-        print("tr_label", tr_label)
-        print("tr_color", tr_color)
+        # print("tag", tag)
+        # print("tr_label", tr_label)
+        # print("tr_color", tr_color)
 
         # # horizontal lines across all panels
         # for ax in axes:
@@ -933,7 +1370,7 @@ def plot_bmp(df_processed, transitions, summary=None):
     states = [classify_phase_state(m) for m in means_smooth]
     point_colors = [state_colors.get(s, "black") for s in states]
 
-    fig, axes = plt.subplots(2, 1, figsize=(24, 20), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(24, 15), sharex=True)
     plot_1(
         df_processed["time"],
         df_processed["p1_unwrapped"],
@@ -1008,6 +1445,89 @@ def plot_bmp(df_processed, transitions, summary=None):
 
     axes[1].legend(handles=legend_elements, loc="upper right")
 
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_bpms_strip(transition_summary):
+    """
+    Plot BPM values for each transition type as:
+    - jittered scatter points
+    - mean line
+    - std error bar
+
+    Parameters
+    ----------
+    data_dict : dict
+        Example:
+        {
+            'in-phase to anti-phase': [73.5, 70.4, ...],
+            'anti-phase to in-phase': [71.9, 70.7, ...],
+            ...
+        }
+    """
+
+    # ---------------------------------------------------
+    # 1) Remove empty groups and convert to normal floats
+    # ---------------------------------------------------
+    clean_data = {
+        k: [float(x) for x in v]
+        for k, v in transition_summary["bpms"].items()
+        if len(v) > 0
+    }
+
+    if len(clean_data) == 0:
+        print("No non-empty transition groups to plot.")
+        return
+
+    # ---------------------------------------------------
+    # 2) Sort by mean BPM
+    # ---------------------------------------------------
+    clean_data = dict(sorted(clean_data.items(), key=lambda x: np.mean(x[1])))
+
+    labels = [f"{k}\n(n={len(v)})" for k, v in clean_data.items()]
+    values = list(clean_data.values())
+
+    # ---------------------------------------------------
+    # 3) Plot
+    # ---------------------------------------------------
+    plt.figure(figsize=(12, 6))
+
+    for i, (label, vals) in enumerate(clean_data.items()):
+        vals = np.array(vals)
+
+        # spread x positions so points don't overlap
+        x = np.linspace(i - 0.08, i + 0.08, len(vals))
+
+        # scatter points
+        plt.scatter(x, vals, alpha=0.7, s=60)
+
+        # mean and std
+        mean = np.mean(vals)
+        std = np.std(vals)
+
+        # mean line
+        plt.hlines(mean, i - 0.2, i + 0.2, linewidth=2, color="green", alpha=0.7)
+
+        # std error bar
+        plt.errorbar(
+            i, mean, yerr=std, fmt="o", capsize=6, markersize=8, color="grey", alpha=0.7
+        )
+
+        # label mean and std
+        plt.text(
+            i + 0.12,
+            mean,
+            f"μ={mean:.2f}\nσ={std:.2f}",
+            fontsize=10,
+            va="center",
+            ha="left",
+        )
+
+    plt.xticks(range(len(labels)), labels, rotation=25, ha="right")
+    plt.ylabel("BPM")
+    plt.title("BPM by Transition Type")
+    plt.grid(True, axis="y", alpha=0.3)
     plt.tight_layout()
     plt.show()
 
@@ -1199,12 +1719,96 @@ def run_full_pipeline(
     smooth_k=3,
     min_dwell=2,
 ):
+
     df_raw = load_and_clean_data(filepath, physiopath)
+    trial_dfs, condition_ranges = divide_by_trials(df_raw)
+    print(condition_ranges)
+
+    df_out = {}
+    windows_out = {}
+    transitions_out = {}
+    transition_summary_out = {}
+    # df = divide_data(df_raw, start, end)
+    for i in range(3, 7):
+        print("Looping through trials...")
+        trial_name = condition_dict[i]
+        start_t = condition_ranges[trial_name][0] + 50
+        end_t = condition_ranges[trial_name][1] - 50
+        print("trial: ", trial_name, "\n")
+        print("Looking at..... ", start_t, " to ", end_t)
+        df = divide_data(df_raw.copy(), start_t, end_t)
+        df = unwrap_angles(df)
+        # print(df.head(), "\n")
+        df_rs = resample_signals(df, dt_target=dt)
+        df_rs = compute_dynamics(df_rs, dt)
+
+        t = df_rs["time"].to_numpy()
+        theta1 = df_rs["p1_unwrapped"].to_numpy()
+        theta2 = df_rs["p2_unwrapped"].to_numpy()
+
+        windows = windowed_phase_analysis(
+            theta1,
+            theta2,
+            t,
+            window_size=window_size,
+            freq_band=freq_band,
+        )
+        print(df_rs.head())
+        transitions, transition_summary = detect_phase_transitions(
+            windows,
+            df_rs[["time", "bpm"]],
+            phase_jump_thresh=phase_jump_thresh,
+            smooth_k=smooth_k,
+            min_dwell=min_dwell,
+        )
+
+        # phase analysis
+        # plot_windowed_phase(windows)
+        # plot_windowed_correlation(windows)
+        plot_phase_transitions(transition_summary, transitions, df_rs)
+        for tr in transitions:
+            print(
+                f"Transition at t={tr['time']:.3f}s | "
+                f"{tr['from_state']} -> {tr['to_state']} | "
+                f"jump={np.degrees(tr['phase_jump']):.1f} deg | "
+                f"std={tr['std']:.3f} | "
+                f"start={tr['duration']['start']} , end={tr['duration']['end']} | "
+                # f"type: {type(tr['duration']['start'])} | "
+                f"duration={tr['duration']['length']:.3f} , {tr['duration']['state']}"
+            )
+        plot_transition_types(transitions)
+        plot_state_histogram(transitions)
+
+        # HeartRate analysis
+        plot_bmp(df_rs, transitions, transition_summary)
+        plot_bpms_strip(transition_summary)
+        results_df = pairwise_independent_ttests(transition_summary["bpms"])
+        print(results_df.round(3))
+
+        df_out[f"{trial_name}"] = df_rs
+        windows_out[f"{trial_name}"] = windows
+        transitions_out[f"{trial_name}"] = transitions
+        transition_summary_out[f"{trial_name}"] = transition_summary
+
+    return df_out, windows_out, transitions_out, transition_summary_out
+
+
+def test_pipeline(
+    filepath,
+    start,
+    end,
+    dt=0.001,
+    window_size=0.5,
+    freq_band=(0, 100),
+    phase_jump_thresh=np.deg2rad(50),
+    smooth_k=3,
+    min_dwell=2,
+):
+    df_raw = load_and_clean_data(filepath)
     df = divide_data(df_raw, start, end)
     df = unwrap_angles(df)
-    # print(df.head(), "\n")
+
     df_rs = resample_signals(df, dt_target=dt)
-    # print(df_rs.head())
     df_rs = compute_dynamics(df_rs, dt)
 
     t = df_rs["time"].to_numpy()

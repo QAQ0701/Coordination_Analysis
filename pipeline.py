@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from pyleoclim.utils.wavelet import cwt_coherence
 from scipy.interpolate import PchipInterpolator, interp1d
 from scipy.signal import savgol_filter
@@ -14,11 +15,22 @@ condition_dict = {
     0: "static practice",
     1: "slow practice",
     2: "fast practice",
-    3: "independant",
+    3: "independent",
     4: "follower",
     5: "evolved",
     6: "human-human",
 }
+
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.labelsize": 16,
+    "xtick.labelsize": 14,
+    "ytick.labelsize": 14,
+    "legend.fontsize": 14,
+    "axes.titlesize": 18
+})
+
+# TODO: box plot of duration of phases
 
 
 # ============================================================
@@ -67,7 +79,7 @@ def find_agent_select_times(df):
 #         "Practice - Fixed": "static practice",
 #         "Practice - Slow": "slow practice",
 #         "Practice - Fast": "fast practice",
-#         "Condition - Independent": "independant",
+#         "Condition - Independent": "independent",
 #         "Condition - Follower": "follower",
 #         "Condition - Crosser": "evolved",
 #         "Condition - Human": "human-human",
@@ -180,9 +192,9 @@ def trim_inactive_region(
 
     # smooth so tiny jitter does not dominate
     if smooth_window > 1:
-        activity = (
-            activity.rolling(window=smooth_window, center=True, min_periods=1).mean()
-        )
+        activity = activity.rolling(
+            window=smooth_window, center=True, min_periods=1
+        ).mean()
 
     is_active = activity > activity_thresh
 
@@ -280,7 +292,7 @@ def divide_by_trials(
         "Practice - Fixed": "static practice",
         "Practice - Slow": "slow practice",
         "Practice - Fast": "fast practice",
-        "Condition - Independent": "independant",
+        "Condition - Independent": "independent",
         "Condition - Follower": "follower",
         "Condition - Crosser": "evolved",
         "Condition - Human": "human-human",
@@ -334,6 +346,7 @@ def divide_by_trials(
         trial_dfs[label] = subdf
 
     return trial_dfs, trimmed_ranges
+
 
 def load_physio_data(physio_dir, bunting_df):
     physio_data_df = pd.read_excel(physio_dir)
@@ -487,6 +500,7 @@ def resample_signals(
 
     return pd.DataFrame(out)
 
+
 def test_resample_signals(
     df,
     dt_target=0.001,
@@ -512,7 +526,6 @@ def test_resample_signals(
             bounds_error=False,
             fill_value="extrapolate",
         )(t_new)
-
 
     return pd.DataFrame(out)
 
@@ -552,16 +565,16 @@ def compute_dynamics(df_rs, dt, torque_constant=0.011, smooth=True):
 
     ppg_signals, ppg_info = nk.ppg_process(ppg_raw, sampling_rate=fs)
 
-    nk.ppg_plot(ppg_signals, ppg_info)
-    fig = plt.gcf()
-    fig.set_size_inches(10, 12, forward=True)
+    # nk.ppg_plot(ppg_signals, ppg_info)
+    # fig = plt.gcf()
+    # fig.set_size_inches(10, 12, forward=True)
     # plt.show()
 
     print(nk.ppg_intervalrelated(ppg_signals, sampling_rate=fs))
 
     nk.hrv(ppg_signals["PPG_Peaks"], sampling_rate=fs, show=True)
-    fig = plt.gcf()
-    fig.set_size_inches(16, 6, forward=True)
+    # fig = plt.gcf()
+    # fig.set_size_inches(16, 6, forward=True)
     # plt.show()
 
     # Optional BPM output
@@ -572,9 +585,9 @@ def compute_dynamics(df_rs, dt, torque_constant=0.011, smooth=True):
 
     eda_signals, eda_info = nk.eda_process(eda_raw, sampling_rate=fs)
 
-    nk.eda_plot(eda_signals, eda_info)
-    fig = plt.gcf()
-    fig.set_size_inches(10, 12, forward=True)
+    # nk.eda_plot(eda_signals, eda_info)
+    # fig = plt.gcf()
+    # fig.set_size_inches(10, 12, forward=True)
     # plt.show()
 
     eda_summary = nk.eda_intervalrelated(eda_signals, sampling_rate=fs)
@@ -757,7 +770,7 @@ def circular_distance(a, b):
 
 def detect_phase_transitions(
     windows,
-    bpm_df = None,
+    bpm_df=None,
     phase_jump_thresh=np.deg2rad(50),
     std_thresh=None,
     smooth_k=3,
@@ -868,9 +881,10 @@ def detect_phase_transitions(
                 if len(transitions) > 0:
                     prev_start = transitions[-1]["duration"]["start"]
                     prev_end = transitions[-1]["duration"]["end"]
-                    
+
                     bpm_segment = bpm_df.loc[
-                        (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end), "bpm"
+                        (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end),
+                        "bpm",
                     ]
 
                     prev_bpm = bpm_segment.mean()
@@ -919,10 +933,9 @@ def compute_bpm_diff(transitions):
     return bpm_diffs
 
 
-def pairwise_independent_ttests(data_dict, correction="bonferroni"):
+def pairwise_independent_ttests(data_dict, trial_name, correction="bonferroni"):
     """
     Run pairwise independent Welch's t-tests between all non-empty transition groups.
-
     Parameters
     ----------
     data_dict : dict
@@ -932,15 +945,12 @@ def pairwise_independent_ttests(data_dict, correction="bonferroni"):
             'anti-phase to in-phase': [...],
             ...
         }
-
     correction : str
         'bonferroni' or None
-
     Returns
     -------
     results_df : pandas.DataFrame
     """
-
     # ---------------------------------------------------
     # 1) Remove empty groups and convert to float arrays
     # ---------------------------------------------------
@@ -955,19 +965,16 @@ def pairwise_independent_ttests(data_dict, correction="bonferroni"):
     # ---------------------------------------------------
     # 2) Generate all pairwise comparisons
     # ---------------------------------------------------
-    group_pairs = list(combinations(clean_data.keys(), 2))
-    m = len(group_pairs)  # number of comparisons
+    group_pairs = [("anti-phase to in-phase", "in-phase to anti-phase")]
+    m = len(group_pairs)
 
     results = []
-
     for g1, g2 in group_pairs:
         x1 = clean_data[g1]
         x2 = clean_data[g2]
 
-        # Welch's independent t-test
         t_stat, p_val = ttest_ind(x1, x2, equal_var=False)
 
-        # optional multiple comparison correction
         if correction == "bonferroni":
             p_adj = min(p_val * m, 1.0)
         else:
@@ -991,7 +998,89 @@ def pairwise_independent_ttests(data_dict, correction="bonferroni"):
         )
 
     results_df = pd.DataFrame(results)
+
+    # ---------------------------------------------------
+    # 3) Render results table
+    # ---------------------------------------------------
+    _plot_ttest_results_table(results_df, correction, trial_name)
+
     return results_df
+
+
+def _plot_ttest_results_table(results_df, correction, trial_name):
+    """Render a formatted matplotlib table from t-test results."""
+
+    # --- build display dataframe ---
+    correction_label = f"p_adj\n({correction})" if correction else "p_adj"
+    display_df = pd.DataFrame(
+        {
+            "Group 1": results_df["group1"],
+            "Group 2": results_df["group2"],
+            "n1": results_df["n1"],
+            "n2": results_df["n2"],
+            "Mean1 (±SD)": results_df.apply(
+                lambda r: f"{r.mean1:.3f} (±{r.std1:.3f})", axis=1
+            ),
+            "Mean2 (±SD)": results_df.apply(
+                lambda r: f"{r.mean2:.3f} (±{r.std2:.3f})", axis=1
+            ),
+            "t-stat": results_df["t_stat"].map("{:.3f}".format),
+            "p-value": results_df["p_value"].map("{:.4f}".format),
+            correction_label: results_df["p_adj"].map("{:.4f}".format),
+            "Significant": results_df["significant"].map({True: "Yes ✓", False: "No"}),
+        }
+    )
+
+    n_rows, n_cols = display_df.shape
+    fig_w = max(14, n_cols * 1.2)
+    fig_h = max(2, n_rows * 1.3 + 1)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.axis("off")
+
+    table = ax.table(
+        cellText=display_df.values,
+        colLabels=display_df.columns,
+        cellLoc="center",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(14)  # increased from 9
+    table.auto_set_column_width(col=list(range(n_cols)))
+
+    # --- add padding by scaling row height ---
+    for (row, col), cell in table.get_celld().items():
+        cell.set_height(0.3)  # increase from default ~0.05
+        cell.PAD = 0.1  # padding around text within each cell
+
+    # --- style header row ---
+    for col_idx in range(n_cols):
+        cell = table[0, col_idx]
+        cell.set_facecolor("#2c3e50")
+        cell.set_text_props(color="white", fontweight="bold")
+
+    # --- style data rows: alternate shading + highlight significant ---
+    for row_idx in range(1, n_rows + 1):
+        is_significant = results_df.iloc[row_idx - 1]["significant"]
+        for col_idx in range(n_cols):
+            cell = table[row_idx, col_idx]
+            if is_significant:
+                cell.set_facecolor("#d5f5e3")  # green tint for significant rows
+            elif row_idx % 2 == 0:
+                cell.set_facecolor("#f2f3f4")  # subtle alternating stripe
+            else:
+                cell.set_facecolor("white")
+
+    correction_str = correction if correction else "none"
+    fig.suptitle(
+        f"{trial_name}: Pairwise Welch's t-tests  |  correction: {correction_str}",
+        fontsize=12,
+        fontweight="bold",
+        y=0.90,
+    )
+
+    plt.tight_layout()
+    plt.show()
 
 
 # ============================================================
@@ -1077,119 +1166,7 @@ def plot_windowed_phase(windows):
     plt.show()
 
 
-def plot_transition_histogram(transitions, bins=20, density=False):
-    """
-    Plot histogram of transition times.
-
-    Parameters
-    ----------
-    transitions : list of dict
-        Output from detect_phase_transitions()
-    bins : int
-        Number of bins
-    density : bool
-        If True, normalize histogram
-    """
-    if len(transitions) == 0:
-        print("No transitions to plot.")
-        return
-
-    times = np.array([tr["time"] for tr in transitions])
-
-    plt.figure(figsize=(8, 4))
-    plt.hist(times, bins=bins, density=density, edgecolor="black")
-
-    plt.xlabel("Time (s)")
-    plt.ylabel("Frequency" if not density else "Density")
-    plt.title("Phase Transition Frequency (Histogram)")
-    plt.grid(True)
-
-    plt.show()
-
-
-# def plot_transition_bar(transitions, bin_width=1.0):
-#     """
-#     Plot bar chart of transition counts over time bins
-#     and label total counts by transition type.
-
-#     Parameters
-#     ----------
-#     transitions : list of dict
-#         Each dict should contain:
-#             - "time"
-#             - optionally "label" or "transition_type"
-#     bin_width : float
-#         Width of time bins (seconds)
-#     """
-#     if len(transitions) == 0:
-#         print("No transitions to plot.")
-#         return
-
-#     # -----------------------------
-#     # Extract times
-#     # -----------------------------
-#     times = np.array([tr["time"] for tr in transitions])
-
-#     t_min = np.min(times)
-#     t_max = np.max(times)
-
-#     bins = np.arange(t_min, t_max + bin_width, bin_width)
-#     counts, edges = np.histogram(times, bins=bins)
-#     centers = 0.5 * (edges[:-1] + edges[1:])
-
-#     # -----------------------------
-#     # Count transition types
-#     # -----------------------------
-#     labels = []
-#     for tr in transitions:
-#         if "label" in tr:
-#             labels.append(tr["label"])
-#         elif "transition_type" in tr:
-#             labels.append(tr["transition_type"])
-#         elif "from_state" in tr and "to_state" in tr:
-#             labels.append(f'{tr["from_state"]} to {tr["to_state"]}')
-#         else:
-#             labels.append("unknown")
-
-#     label_counts = Counter(labels)
-#     total_transitions = len(transitions)
-
-#     # -----------------------------
-#     # Plot
-#     # -----------------------------
-#     fig, ax = plt.subplots(figsize=(12, 5))
-#     ax.bar(centers, counts, width=bin_width * 0.9)
-
-#     ax.set_xlabel("Time (s)")
-#     ax.set_ylabel("Number of transitions")
-#     ax.set_title("Phase Transition Frequency (Bar Plot)")
-#     ax.grid(True, alpha=0.3)
-
-#     # -----------------------------
-#     # Build annotation text
-#     # -----------------------------
-#     summary_text = [f"Total transitions: {total_transitions}"]
-#     for label, n in sorted(label_counts.items()):
-#         summary_text.append(f"{label}: {n}")
-
-#     summary_str = "\n".join(summary_text)
-
-#     # Put summary text on plot
-#     ax.text(
-#         1.02, 0.98,
-#         summary_str,
-#         transform=ax.transAxes,
-#         va="top",
-#         ha="left",
-#         fontsize=10,
-#         bbox=dict(boxstyle="round", facecolor="white", alpha=0.9)
-#     )
-
-#     plt.tight_layout()
-#     plt.show()
-
-
-def plot_transition_types(transitions):
+def plot_transition_types(transitions, trial_name=""):
     """
     Plot frequency of transition types (state-to-state),
     with counts per type and total count shown.
@@ -1204,13 +1181,17 @@ def plot_transition_types(transitions):
     unique = list(label_counts.keys())
     counts = list(label_counts.values())
     total_count = sum(counts)
+    
+    min_dim = max(6, len(unique) * 2)
+    fig, ax = plt.subplots(
+        figsize=(min_dim, 7)
+        
+    )  # scale width to bar count
+    bars = ax.bar(unique, counts, width=0.3)
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(unique, counts)
-
-    ax.set_xlabel("Transition type")
+    ax.set_xlabel(f"{trial_name}: Type of Transition")
     ax.set_ylabel("Count")
-    ax.set_title("Phase Transition Types")
+    ax.set_title(f"{trial_name}: Frequency of Transition Types")
     ax.set_xticklabels(unique, rotation=30, ha="right")
     ax.grid(True, alpha=0.3)
 
@@ -1221,7 +1202,7 @@ def plot_transition_types(transitions):
             bar.get_height(),
             str(count),
             ha="center",
-            va="bottom"
+            va="bottom",
         )
 
     # summary text box
@@ -1230,20 +1211,21 @@ def plot_transition_types(transitions):
         summary_text.append(f"{label}: {count}")
 
     ax.text(
-        1.02, 0.98,
+        1.02,
+        0.98,
         "\n".join(summary_text),
         transform=ax.transAxes,
         va="top",
         ha="left",
         fontsize=10,
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9)
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
     )
 
     plt.tight_layout()
     plt.show()
 
 
-def plot_state_histogram(transitions):
+def plot_state_histogram(transitions, trial_name):
     """
     Plot frequency of coordination states from transitions,
     with counts per state and total count shown.
@@ -1259,12 +1241,17 @@ def plot_state_histogram(transitions):
     counts = list(label_counts.values())
     total_count = sum(counts)
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(unique, counts)
+    min_dim = max(6, len(unique) * 2)
+    fig, ax = plt.subplots(
+        figsize=(min_dim, 7)
+        
+    )  
+
+    bars = ax.bar(unique, counts, width=0.3)
 
     ax.set_xlabel("Coordination State")
     ax.set_ylabel("Count")
-    ax.set_title("Phases")
+    ax.set_title(f"{trial_name}: Frequency of Coordination States")
     ax.set_xticklabels(unique, rotation=30, ha="right")
     ax.grid(True, alpha=0.3)
 
@@ -1275,7 +1262,7 @@ def plot_state_histogram(transitions):
             bar.get_height(),
             str(count),
             ha="center",
-            va="bottom"
+            va="bottom",
         )
 
     # summary text box
@@ -1284,13 +1271,14 @@ def plot_state_histogram(transitions):
         summary_text.append(f"{label}: {count}")
 
     ax.text(
-        1.02, 0.98,
+        1.02,
+        0.98,
         "\n".join(summary_text),
         transform=ax.transAxes,
         va="top",
         ha="left",
         fontsize=10,
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9)
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
     )
 
     plt.tight_layout()
@@ -1325,7 +1313,7 @@ def plot_angles(time, p1, p2, ax=None):
     return ax
 
 
-def plot_phase_transitions(summary, transitions, df_processed):
+def plot_phase_transitions(summary, transitions, df_processed, trial_name):
     if not summary:
         print("No transition summary to plot.")
         return
@@ -1334,6 +1322,7 @@ def plot_phase_transitions(summary, transitions, df_processed):
     means_smooth = summary["means_smooth"]
     stds_smooth = summary["stds_smooth"]
     phase_jump = summary["phase_jump"]
+    title_font = 24
 
     # -----------------------------
     # State -> color mapping
@@ -1357,7 +1346,7 @@ def plot_phase_transitions(summary, transitions, df_processed):
     states = [classify_phase_state(m) for m in means_smooth]
     point_colors = [state_colors.get(s, "black") for s in states]
 
-    fig, axes = plt.subplots(4, 1, figsize=(24, 20), sharex=True)
+    fig, axes = plt.subplots(5, 1, figsize=(40, 50), sharex=True)
 
     # =========================================================
     # 1) Positional / angle graph on top
@@ -1368,12 +1357,12 @@ def plot_phase_transitions(summary, transitions, df_processed):
         df_processed["p2_unwrapped"],
         ax=axes[0],
     )
-    axes[0].set_title("Agent Angles + Coordination Transitions")
+    axes[0].set_title(f"{trial_name}\n Positional data vs Time", fontsize=title_font)
 
     # =========================================================
     # 2) Mean phase
     # =========================================================
-    axes[1].plot(centers, means_smooth, color="black", alpha=0.5, linewidth=1.5)
+    axes[1].plot(centers, means_smooth, color="black", alpha=0.5, linewidth=2)
     axes[1].scatter(centers, means_smooth, c=point_colors, s=50, zorder=3)
 
     axes[1].axhline(0, linestyle="--", alpha=0.6, color="black", label="In-phase (0)")
@@ -1385,40 +1374,55 @@ def plot_phase_transitions(summary, transitions, df_processed):
     axes[1].axhline(np.pi - 0.87, linestyle="--", alpha=0.6, color="gray")
     axes[1].axhline(0 + 0.87, linestyle="--", alpha=0.6, color="gray")
     axes[1].axhline(0 - 0.87, linestyle="--", alpha=0.6, color="gray")
-    axes[1].set_ylabel("Mean phase (rad)")
-    axes[1].set_title("Windowed Relative Phase and Detected Transitions")
+    axes[1].set_ylabel("Mean phase (rad)", fontsize=14)
+    axes[1].set_title("Windowed Relative Phase and Detected Transitions", fontsize=title_font)
     axes[1].grid(True)
 
     # =========================================================
-    # 3) Circular std
+    # 3) BPM
     # =========================================================
-    axes[2].plot(centers, stds_smooth, marker="o", color="black")
-    axes[2].axhline(
+    if "bpm" in df_processed.columns:  
+        plot_1(
+            df_processed["time"],
+            df_processed["bpm"],
+            "Beats per minute (BPM)",
+            ax=axes[2],
+        )
+        axes[2].set_title("Heartbeat Rate (BPM)", fontsize=title_font)
+        axes[2].grid(True)
+
+    # =========================================================
+    # 4) Circular std
+    # =========================================================
+    axes[3].plot(centers, stds_smooth, marker="o", color="black")
+    axes[3].axhline(
         summary["std_thresh"],
         linestyle="--",
         alpha=0.7,
         color="purple",
         label="std thresh",
     )
-    axes[2].set_ylabel("Circular std")
-    axes[2].legend()
-    axes[2].grid(True)
+    axes[3].set_ylabel("Circular std")
+    axes[3].set_title("Circular Standard Deviation", fontsize=title_font)
+    axes[3].legend()
+    axes[3].grid(True)
 
     # =========================================================
     # 4) Phase jump
     # =========================================================
-    axes[3].plot(centers, phase_jump, marker="o", color="black")
-    axes[3].axhline(
+    axes[4].plot(centers, phase_jump, marker="o", color="black")
+    axes[4].axhline(
         summary["phase_jump_thresh"],
         linestyle="--",
         alpha=0.7,
         color="blue",
         label="jump thresh",
     )
-    axes[3].set_ylabel("Phase jump (rad)")
-    axes[3].set_xlabel("Time (s)")
-    axes[3].legend()
-    axes[3].grid(True)
+    axes[4].set_ylabel("Phase jump (rad)")
+    axes[4].set_xlabel("Time (s)")
+    axes[4].set_title("Phase Jump", fontsize=title_font)
+    axes[4].legend()
+    axes[4].grid(True)
 
     # =========================================================
     # Mark transitions on all panels with state-specific colors
@@ -1445,7 +1449,7 @@ def plot_phase_transitions(summary, transitions, df_processed):
             tr["to_phase"],
             tr_label,
             color=tr_color,
-            fontsize=9,
+            fontsize=14,
             rotation=90,
             va="bottom",
             ha="right",
@@ -1484,7 +1488,7 @@ def plot_phase_transitions(summary, transitions, df_processed):
         ),
     ]
 
-    axes[1].legend(handles=legend_elements, loc="upper right")
+    axes[1].legend(handles=legend_elements, loc="upper right", fontsize=18)
 
     plt.tight_layout()
     plt.show()
@@ -1598,27 +1602,17 @@ def plot_bmp(df_processed, transitions, summary=None):
     plt.show()
 
 
-def plot_bpms_strip(transition_summary):
+def plot_bpms_strip(transition_summary, trial_name):
     """
     Plot BPM values for each transition type as:
     - jittered scatter points
     - mean line
     - std error bar
-
-    Parameters
-    ----------
-    data_dict : dict
-        Example:
-        {
-            'in-phase to anti-phase': [73.5, 70.4, ...],
-            'anti-phase to in-phase': [71.9, 70.7, ...],
-            ...
-        }
     """
 
-    # ---------------------------------------------------
-    # 1) Remove empty groups and convert to normal floats
-    # ---------------------------------------------------
+    import numpy as np
+    import matplotlib.pyplot as plt
+
     clean_data = {
         k: [float(x) for x in v]
         for k, v in transition_summary["bpms"].items()
@@ -1629,17 +1623,11 @@ def plot_bpms_strip(transition_summary):
         print("No non-empty transition groups to plot.")
         return
 
-    # ---------------------------------------------------
-    # 2) Sort by mean BPM
-    # ---------------------------------------------------
+    # Sort by mean BPM
     clean_data = dict(sorted(clean_data.items(), key=lambda x: np.mean(x[1])))
 
     labels = [f"{k}\n(n={len(v)})" for k, v in clean_data.items()]
-    values = list(clean_data.values())
 
-    # ---------------------------------------------------
-    # 3) Plot
-    # ---------------------------------------------------
     plt.figure(figsize=(12, 6))
 
     for i, (label, vals) in enumerate(clean_data.items()):
@@ -1648,19 +1636,45 @@ def plot_bpms_strip(transition_summary):
         # spread x positions so points don't overlap
         x = np.linspace(i - 0.08, i + 0.08, len(vals))
 
-        # scatter points
-        plt.scatter(x, vals, alpha=0.7, s=60)
+        # only add labels the first time so legend is not duplicated
+        scatter_label = "Individual BPMs" if i == 0 else None
+        mean_label = "Mean BPM" if i == 0 else None
+        std_label = "±1 SD" if i == 0 else None
 
-        # mean and std
+        # scatter points
+        plt.scatter(
+            x,
+            vals,
+            alpha=0.7,
+            s=60,
+            label=scatter_label,
+        )
+
         mean = np.mean(vals)
         std = np.std(vals)
 
         # mean line
-        plt.hlines(mean, i - 0.2, i + 0.2, linewidth=2, color="green", alpha=0.7)
+        plt.hlines(
+            mean,
+            i - 0.2,
+            i + 0.2,
+            linewidth=2,
+            color="green",
+            alpha=0.7,
+            label=mean_label,
+        )
 
         # std error bar
         plt.errorbar(
-            i, mean, yerr=std, fmt="o", capsize=6, markersize=8, color="grey", alpha=0.7
+            i,
+            mean,
+            yerr=std,
+            fmt="o",
+            capsize=6,
+            markersize=8,
+            color="grey",
+            alpha=0.7,
+            label=std_label,
         )
 
         # label mean and std
@@ -1675,11 +1689,12 @@ def plot_bpms_strip(transition_summary):
 
     plt.xticks(range(len(labels)), labels, rotation=25, ha="right")
     plt.ylabel("BPM")
-    plt.title("BPM by Transition Type")
+    plt.title(f"{trial_name}: BPM by Transition Type")
     plt.grid(True, axis="y", alpha=0.3)
+
+    plt.legend(loc="upper left")
     plt.tight_layout()
     plt.show()
-
 
 def plot_transition_diagnostics(
     summary, windows, transitions=None, min_dwell=5, candidate_only=True
@@ -1851,6 +1866,107 @@ def plot_transition_diagnostics(
     plt.show()
 
 
+def plot_phase_duration_by_condition(transitions_by_condition, ax=None):
+    """
+    Plot grouped boxplots of phase durations by condition and phase.
+
+    Expected keys in transitions_by_condition:
+        "INDEPENDENT", "FOLLOWER", "EVOLVED", "HUMAN-HUMAN"
+    """
+    import matplotlib.pyplot as plt
+
+    conditions = ["INDEPENDENT", "FOLLOWER", "EVOLVED", "HUMAN-HUMAN"]
+    phases = ["in-phase", "anti-phase", "intermediate", "human"]
+
+    phase_durations = {
+        cond: {phase: [] for phase in phases}
+        for cond in conditions
+    }
+
+    # Collect durations
+    for cond in conditions:
+        for tr in transitions_by_condition.get(cond, []):
+            if "duration" not in tr:
+                continue
+
+            state = str(tr["duration"]["state"]).strip()
+            length = tr["duration"]["length"]
+
+            if state in phases:
+                phase_durations[cond][state].append(length)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(15, 6))
+
+    phase_colors = {
+        "in-phase": "#66c2a5",
+        "anti-phase": "#fc8d62",
+        "intermediate": "#8da0cb",
+        "human": "#e78ac3",
+    }
+
+    positions = []
+    data = []
+    colors = []
+    labels = []
+
+    base_positions = [1, 6, 11, 16]
+
+    for cond_idx, cond in enumerate(conditions):
+        base = base_positions[cond_idx]
+
+        for phase_idx, phase in enumerate(phases):
+            vals = phase_durations[cond][phase]
+
+            if len(vals) == 0:
+                continue
+
+            positions.append(base + phase_idx)
+            data.append(vals)
+            colors.append(phase_colors[phase])
+            labels.append(f"{cond}\n{phase}")
+
+    bp = ax.boxplot(
+        data,
+        positions=positions,
+        widths=0.7,
+        patch_artist=True,
+        showmeans=True,
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+
+    ax.set_xticks(positions)
+    ax.set_yticks(np.arange(0, 95, 5))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=12)
+    ax.set_ylabel("Duration (s)")
+    ax.set_title("Phase Duration by Condition and Coordination State")
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
+
+    # Separators between condition groups
+    ax.axvline(5, color="gray", linestyle=":", alpha=0.5)
+    ax.axvline(10, color="gray", linestyle=":", alpha=0.5)
+    ax.axvline(15, color="gray", linestyle=":", alpha=0.5)
+
+    # Legend
+    legend_handles = [
+        Patch(facecolor=phase_colors[phase], edgecolor="black", alpha=0.7, label=phase)
+        for phase in phases
+    ]
+
+    ax.legend(
+        handles=legend_handles,
+        title="Phase",
+        loc="upper right",
+        fontsize=11,
+        title_fontsize=12,
+        frameon=True,
+    )
+
+    return ax, phase_durations
+
 # ============================================================
 # --------------------- FULL PIPELINE ------------------------
 # ============================================================
@@ -1910,11 +2026,11 @@ def run_full_pipeline(
             smooth_k=smooth_k,
             min_dwell=min_dwell,
         )
-
+        trial_name = trial_name.upper()
         # phase analysis
         # plot_windowed_phase(windows)
         # plot_windowed_correlation(windows)
-        plot_phase_transitions(transition_summary, transitions, df_rs)
+        plot_phase_transitions(transition_summary, transitions, df_rs, trial_name)
         for tr in transitions:
             print(
                 f"Transition at t={tr['time']:.3f}s | "
@@ -1925,19 +2041,21 @@ def run_full_pipeline(
                 # f"type: {type(tr['duration']['start'])} | "
                 f"duration={tr['duration']['length']:.3f} , {tr['duration']['state']}"
             )
-        plot_transition_types(transitions)
-        plot_state_histogram(transitions)
+        plot_transition_types(transitions, trial_name)
+        plot_state_histogram(transitions, trial_name)
 
         # HeartRate analysis
-        plot_bmp(df_rs, transitions, transition_summary)
-        plot_bpms_strip(transition_summary)
-        results_df = pairwise_independent_ttests(transition_summary["bpms"])
+        # plot_bmp(df_rs, transitions, transition_summary)
+        plot_bpms_strip(transition_summary, trial_name)
+        results_df = pairwise_independent_ttests(transition_summary["bpms"], trial_name)
         print(results_df.round(3))
 
         df_out[f"{trial_name}"] = df_rs
         windows_out[f"{trial_name}"] = windows
         transitions_out[f"{trial_name}"] = transitions
         transition_summary_out[f"{trial_name}"] = transition_summary
+    
+    plot_phase_duration_by_condition(transitions_out)
 
     return df_out, windows_out, transitions_out, transition_summary_out
 

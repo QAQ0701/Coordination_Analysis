@@ -828,7 +828,6 @@ def detect_phase_transitions(
 
         unique, counts = np.unique(future_states, return_counts=True)
         count_dict = dict(zip(unique, counts))
-        # print(count_dict)
 
         old_state_angle = means_smooth[idx - 1]
         new_state_angle = means_smooth[idx]
@@ -876,27 +875,39 @@ def detect_phase_transitions(
                 "state": old_label,
             }
 
+            # FIX: use the current transition's own duration instead of
+            # looking back at transitions[-1], so the first/only transition
+            # is handled correctly and its label is recorded in bpms.
             transition["prev_bpm"] = np.nan
             if bpm_df is not None:
-                if len(transitions) > 0:
-                    prev_start = transitions[-1]["duration"]["start"]
-                    prev_end = transitions[-1]["duration"]["end"]
+                prev_start = transition["duration"]["start"]
+                prev_end = transition["duration"]["end"]
 
-                    bpm_segment = bpm_df.loc[
-                        (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end),
-                        "bpm",
-                    ]
+                bpm_segment = bpm_df.loc[
+                    (bpm_df["time"] >= prev_start) & (bpm_df["time"] < prev_end),
+                    "bpm",
+                ]
 
-                    prev_bpm = bpm_segment.mean()
-                    transition["prev_bpm"] = prev_bpm
-
-                    bpms[f"{old_label} to {new_label}"].append(prev_bpm)
+                prev_bpm = bpm_segment.mean()
+                transition["prev_bpm"] = prev_bpm
+                bpms[f"{old_label} to {new_label}"].append(prev_bpm)
 
             transitions.append(transition)
             prev_idx = idx
 
             for j in range(max(0, idx - 1), min(len(means_smooth), idx + min_dwell)):
                 used.add(j)
+
+    # FIX: record the trailing state's duration using the last datapoint,
+    # so the segment after the final (or only) transition is preserved.
+    if transitions:
+        last = transitions[-1]
+        last["trailing_duration"] = {
+            "start": float(centers[prev_idx]),
+            "end":   float(centers[-1]),
+            "length": float(centers[-1] - centers[prev_idx]),
+            "state": last["to_state"],
+        }
 
     summary = {
         "centers": centers,
@@ -911,7 +922,6 @@ def detect_phase_transitions(
     }
 
     return transitions, summary
-
 
 def compute_bpm_diff(transitions):
     bpm_diffs = []
